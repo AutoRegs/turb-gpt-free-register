@@ -35,7 +35,7 @@ class BrowserUseClient:
             )
         return self.api_key
 
-    def build_connect_url(self) -> BrowserUseSession:
+    def build_connect_url(self, *, fresh: bool = False) -> BrowserUseSession:
         api_key = self.require_api_key()
         base = str(getattr(_cfg, "BROWSER_USE_CDP_BASE", "wss://connect.browser-use.com") or "wss://connect.browser-use.com").rstrip("?&")
         query: dict[str, str] = {"apiKey": api_key}
@@ -63,6 +63,10 @@ class BrowserUseClient:
             if text:
                 query[str(key)] = text
 
+        if fresh:
+            query.pop("profileId", None)
+            profile_id = ""
+
         connect_url = f"{base}?{urlencode(query)}"
         # 日志里不要打印完整 apiKey
         safe_query = dict(query)
@@ -85,10 +89,10 @@ class BrowserUseClient:
             raw={"query": safe_query, "base": base},
         )
 
-    def open_session(self) -> BrowserUseSession:
+    def open_session(self, *, fresh: bool = False) -> BrowserUseSession:
         mode = str(getattr(_cfg, "BROWSER_USE_CONNECT_MODE", "cdp_url") or "cdp_url").strip().lower()
         if mode not in ("cdp_url", "cdp", "websocket", "ws", "sdk"):
             raise RuntimeError(f"不支持的 BROWSER_USE_CONNECT_MODE={mode!r}，当前支持 cdp_url")
         # 目前 Browser Use 官方最稳的公开接入就是 CDP websocket。
         # sdk/rest create-session 接口若以后稳定，可在此扩展。
-        return self.build_connect_url()
+        return self.build_connect_url(fresh=True) if fresh else self.build_connect_url()

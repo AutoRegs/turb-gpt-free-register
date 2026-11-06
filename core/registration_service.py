@@ -106,13 +106,13 @@ def _random_display_name() -> str:
     return random_display_name()
 
 
-def _prepare_registration_args() -> tuple[str | None, str, str]:
+def _prepare_registration_args(inherited_email: str | None = None) -> tuple[str | None, str, str]:
     """复用 CLI 的默认规则，为旧 Web 任务入口补齐注册参数。"""
     # 用模块属性读，支持 WebUI 热加载
     from config import register as _r, email as _e
     from core.profile_utils import generate_random_birthday
 
-    email = str(getattr(_r, "REGISTER_EMAIL", "") or "").strip()
+    email = str(inherited_email or getattr(_r, "REGISTER_EMAIL", "") or "").strip()
     name = str(getattr(_r, "REGISTER_NAME", "") or "").strip()
     # WebUI/配置里有时会把空值存成 "-"，这不是合法 OpenAI 显示名，按空处理并自动生成
     if name in {"-", "—", "无", "空", "none", "None", "null", "NULL"}:
@@ -132,6 +132,22 @@ def _prepare_registration_args() -> tuple[str | None, str, str]:
             "手动模式未配置邮箱。请在 WebUI 配置页设置 REGISTER_EMAIL，"
             "或开启 USE_EMAIL_SERVICE 并从邮箱池领取。"
         )
+
+    if (
+        not inherited_email
+        and not _e.USE_EMAIL_SERVICE
+        and email
+        and getattr(_e, "ENABLE_ICLOUD_EMAIL_ALIAS", False)
+    ):
+        from core.email_provider import is_icloud_email, has_email_alias, generate_icloud_alias_email
+        if is_icloud_email(email) and not has_email_alias(email):
+            existing = db.get_account_by_email(email)
+            if existing:
+                alias_email = generate_icloud_alias_email(email)
+                logger.info("[Registration] 手动模式：原 iCloud 邮箱 %s 已注册，第二次注册使用别名: %s", email, alias_email)
+                email = alias_email
+            else:
+                logger.info("[Registration] 手动模式：iCloud 邮箱第一次注册，使用原邮箱: %s", email)
 
     return email, name, birthday
 
@@ -257,9 +273,14 @@ def shutdown_executor(wait: bool = True) -> None:
 class _JobLogContext:
     """让本线程的根 logger 多一个 FileHandler，结束后移除。"""
 
-    def __init__(self, log_path: str):
+    def __init__(self, log_path: str, redact_values: list[str] | None = None):
         self.log_path = log_path
         self.handler: logging.FileHandler | None = None
+        self.redact_values = [str(value) for value in (redact_values or []) if str(value)]
+
+    def add_redactions(self, *values: object) -> None:
+        """追加本任务日志需要隐藏的敏感值。"""
+        self.redact_values.extend(str(value) for value in values if str(value))
 
     def __enter__(self):
         Path(self.log_path).parent.mkdir(parents=True, exist_ok=True)
@@ -269,9 +290,20 @@ class _JobLogContext:
             "%(asctime)s [%(levelname)s] [%(threadName)s] %(message)s",
             datefmt="%H:%M:%S",
         ))
-        # 仅给本线程过滤 —— 用 thread name 做区分，避免污染其他任务的日志
+        # 仅给本线程过滤 —— 用 thread name 做区分，避免污染其他任务的日志。
         thread_name = threading.current_thread().name
-        self.handler.addFilter(lambda r: r.threadName == thread_name)
+        self.handler.addFilter(lambda record: record.threadName == thread_name)
+        if self.redact_values:
+            parent_formatter = self.handler.formatter
+
+            class _RedactingFormatter(logging.Formatter):
+                def format(_, record: logging.LogRecord) -> str:
+                    rendered = parent_formatter.format(record)
+                    for value in self.redact_values:
+                        rendered = rendered.replace(value, "[已隐藏]")
+                    return rendered
+
+            self.handler.setFormatter(_RedactingFormatter())
         logging.getLogger().addHandler(self.handler)
         return self
 
@@ -287,13 +319,19 @@ def _run_one_job(job_id: int, log_file: str) -> None:
     if not _activate_job(job_id):
         log_logger.info("[Job %s] 任务不存在、已取消/结束或已被领取，跳过执行", job_id)
         return
-
+    current = db.get_job(job_id)
     email: str | None = None
     try:
         with _JobLogContext(log_file):
             from main import run_registration
             log_logger.info(f"[Job {job_id}] 开始注册任务")
-            email, name, birthday = _prepare_registration_args()
+            inherited_email = str((current or {}).get("email") or "").strip() or None
+            inherited_password = str((current or {}).get("registration_password") or (current or {}).get("password") or "").strip() or None
+            if inherited_email:
+                log_logger.info(f"[Job {job_id}] 重试任务自动继承上一次领取的邮箱: {inherited_email}")
+            if inherited_password:
+                log_logger.info(f"[Job {job_id}] 重试任务自动继承上一次设置的密码")
+            email, name, birthday = _prepare_registration_args(inherited_email=inherited_email)
             db.update_job(job_id, email=email)
             check_stop_requested()
             def _on_email_acquired(acquired_email: str) -> None:
@@ -303,11 +341,19 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     db.update_job(job_id, email=email)
                     log_logger.info(f"[Job {job_id}] 页面已找到邮箱输入框，已分配邮箱: {email}")
 
+            def _on_password_set(acquired_password: str) -> None:
+                acquired = str(acquired_password or "").strip() or None
+                if acquired:
+                    db.update_job(job_id, registration_password=acquired)
+                    log_logger.info(f"[Job {job_id}] 账号密码已设置并记录至任务")
+
             result = run_registration(
                 email=email,
                 name=name,
                 birthday=birthday,
                 on_email_acquired=_on_email_acquired,
+                on_password_set=_on_password_set,
+                inherited_password=inherited_password,
             )
             if is_stop_requested(job_id):
                 _release_unconsumed_job_email(email, "用户手动停止")
@@ -436,7 +482,7 @@ def _run_codex_retry_job(job_id: int, log_file: str, email: str, account_id: int
 # 公共接口
 # ============================================================
 
-def submit_registration(count: int = 1, email_source: str | None = None, workers: int | None = None) -> list[dict]:
+def submit_registration(count: int = 1, email_source: str | None = None, workers: int | None = None, emails: list[str] | None = None, passwords: list[str | None] | None = None) -> list[dict]:
     """
     创建 N 个注册任务并提交到线程池。
     email_source 仅记录到 DB；实际邮箱来源固定为 Outlook 账号池。
@@ -447,13 +493,15 @@ def submit_registration(count: int = 1, email_source: str | None = None, workers
     if email_source is None:
         from config import email as _email_cfg
         email_source = _email_cfg.EMAIL_SOURCE
+    if emails and len(emails) > 0 and (count == 1 or count < len(emails)):
+        count = len(emails)
 
     # 创建/切换线程池和提交本批任务必须整体串行化：否则另一请求在本批提交中途
     # 切换 workers 并 shutdown 旧池，会导致后续 submit 报 cannot schedule new futures after shutdown。
     with _executor_lock:
         executor = get_executor(max_workers=workers)
         effective_workers = get_executor_workers()
-        jobs = db.create_jobs(count=count, email_source=email_source)
+        jobs = db.create_jobs(count=count, email_source=email_source, emails=emails, passwords=passwords)
         for job in jobs:
             try:
                 executor.submit(_run_one_job, job["id"], job["log_file"])
@@ -494,7 +542,7 @@ def get_retry_info(job: dict, *, context: dict | None = None) -> dict:
         "retry_reason": None,
         "display_status": status,
     }
-    if status not in ("failed", "stopped", "cancelled"):
+    if status not in ("failed", "stopped", "cancelled", "needs_email_otp", "deactivated"):
         return info
 
     successful_retry = (context.get('successful_retry') if context is not None
@@ -502,6 +550,16 @@ def get_retry_info(job: dict, *, context: dict | None = None) -> dict:
     if successful_retry is not None:
         info["retry_reason"] = f"后续重试任务 #{successful_retry.get('id')} 已成功"
         info["successful_retry_job_id"] = successful_retry.get("id")
+        return info
+
+    # 导入任务登录失败时，凭据仍保存在服务端任务记录中，可直接重新登录。
+    # 套餐查询失败不会把任务标成 failed，因此不会误触发登录重试。
+    if str(job.get("job_type") or "") == "account_import":
+        info.update({
+            "retryable": True,
+            "retry_action": "account_import",
+            "retry_label": "重试登录",
+        })
         return info
 
     account = context.get('account') if context is not None else _account_for_job(job)
@@ -552,21 +610,39 @@ def retry_job(job_id: int, workers: int | None = None) -> dict:
     account = _account_for_job(source)
     email = str((account or {}).get("email") or source.get("email") or "").strip()
     account_id = int(account["id"]) if account and account.get("id") is not None else None
+    if action == "account_import" and not db.get_import_credentials(int(job_id)):
+        return {"ok": False, "error": "导入凭据不存在，无法重试登录", "status": 409}
     reserved_codex = False
     if action == "codex":
         if not email or account_id is None:
             return {"ok": False, "error": "已注册账号信息不完整，无法补跑 Codex", "status": 409}
+        acc = db.get_account(int(account_id)) if account_id else db.get_account_by_email(email)
+        if acc and acc.get("status") == "sold":
+            return {"ok": False, "error": "账号已出售，不可操作", "status": 400}
         if not codex_retry_service.reserve(email):
             return {"ok": False, "error": "该账号正在补跑 Codex，请稍候", "status": 409}
         reserved_codex = True
+    retry_email = None
+    retry_password = None
+    if action in {"codex", "account_import"}:
+        retry_email = email
+    elif action == "registration" and email:
+        # 如果上一次领取的邮箱未生成账号，且错误原因并非“邮箱已注册/不支持”，则自动继承该邮箱重试
+        err_text = str(source.get("error") or "").lower()
+        unusable_hints = ("already registered", "已注册", "not supported", "不支持", "deactivated", "已废")
+        if not any(hint in err_text for hint in unusable_hints):
+            if db.get_account_by_email(email) is None:
+                retry_email = email
+                retry_password = str(source.get("registration_password") or source.get("password") or "").strip() or None
 
     try:
         job, created = db.create_retry_job(
             int(job_id),
-            job_type="codex_retry" if action == "codex" else "registration",
+            job_type=("codex_retry" if action == "codex" else "account_import" if action == "account_import" else "registration"),
             email_source=str(source.get("email_source") or "outlook"),
-            email=email if action == "codex" else None,
+            email=retry_email,
             account_id=account_id if action == "codex" else None,
+            registration_password=retry_password,
         )
     except LookupError as exc:
         if reserved_codex:
@@ -597,6 +673,9 @@ def retry_job(job_id: int, workers: int | None = None) -> dict:
             executor = get_executor(max_workers=workers)
             if action == "codex":
                 executor.submit(_run_codex_retry_job, job["id"], job["log_file"], email, int(account_id))
+            elif action == "account_import":
+                from core.account_import_service import _run_import_job
+                executor.submit(_run_import_job, job["id"])
             else:
                 executor.submit(_run_one_job, job["id"], job["log_file"])
     except Exception as exc:
@@ -616,7 +695,7 @@ def retry_job(job_id: int, workers: int | None = None) -> dict:
         "ok": True,
         "created": True,
         "reused": False,
-        "message": f"已创建重试任务 #{job['id']}（{'Codex 补跑' if action == 'codex' else '完整注册'}）",
+        "message": f"已创建重试任务 #{job['id']}（{'Codex 补跑' if action == 'codex' else '重试登录' if action == 'account_import' else '完整注册'}）",
         "source_job_id": int(job_id),
         "retry_action": action,
         "job": job,

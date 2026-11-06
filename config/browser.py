@@ -99,14 +99,23 @@ CLOUD_PROXY_ORG_KEYWORDS = [
 BROWSER_DATA_SAVER_MODE: bool = False
 # 代理连接前按目标主机拦截，包含子域名，覆盖启动阶段及后台组件下载。
 # 仅本地浏览器使用计量中继且开启省流量模式时生效；[] 关闭域名拦截。
-BROWSER_DATA_SAVER_BLOCKED_PROXY_HOSTS: list[str] = ["dl.google.com", "gvt1.com"]
+BROWSER_DATA_SAVER_BLOCKED_PROXY_HOSTS: list[str] = [
+    "dl.google.com",
+    "gvt1.com",
+    "google.com",
+    "googleapis.com",
+    "gstatic.com",
+    "google-analytics.com",
+    "statsigapi.net",
+    "ab.chatgpt.com",
+]
 # 注册已经拿到 accessToken 后，阻断不再需要的 ChatGPT 应用壳/遥测资源。
 # 仅在 Roxy/Cloak 注册后阶段生效，不影响邮箱、验证码和登录页面。
 BROWSER_DATA_SAVER_DEEP_MODE: bool = True
 # 每行一个 Playwright resource_type。可选 image/media/font/manifest/texttrack 等；
 # 默认只拦截 image、media；也可配置 stylesheet/font 等资源；Roxy 还会通过 Chromium 启动参数关闭图片加载，
 # 遇到页面布局或验证码异常时可关闭模式。
-BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES: list[str] = ["image", "media"]
+BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES: list[str] = ["image", "media", "font"]
 # URL glob 级别的额外拦截。以下是资源明细中确认不参与邮箱密码注册主流程的
 # RUM/广告统计资源；Google GSI 仅用于 Google 登录，不使用 Google 登录时默认拦截。
 # 不要把 ChatGPT/auth.openai 的 CDN chunk 当作候选：即使某个 chunk 只有少量函数
@@ -116,12 +125,14 @@ BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES: list[str] = ["image", "media"]
 BROWSER_DATA_SAVER_BLOCKED_URL_PATTERNS: list[str] = [
     "**://auth.openai.com/awe/api/v2/rum**",
     "**://chatgpt.com/awe/api/v2/rum**",
-    "**://chatgpt.com/ces/statsc/flush**",
+    "**://chatgpt.com/ces/**",
+    "**://bzr.openai.com/**",
     "**://connect.facebook.net/**",
     "**://analytics.tiktok.com/**",
     "**://snap.licdn.com/**",
     "**://bat.bing.com/**",
     "**://accounts.google.com/gsi/client**",
+    "**://ab.chatgpt.com/**",
 ]
 
 # ---------- Roxy/Cloak 浏览器流量明细日志 ----------

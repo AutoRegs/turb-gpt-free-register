@@ -177,7 +177,9 @@ def run_registration(
     otp_code: str = None,
     batch_dir=None,
     on_email_acquired: Callable[[str], None] | None = None,
-):
+    on_password_set: Callable[[str], None] | None = None,
+    inherited_password: str | None = None,
+) -> dict:
     """
     执行完整的 ChatGPT 邮箱密码注册流程。
 
@@ -209,6 +211,8 @@ def run_registration(
             otp_code=otp_code,
             batch_dir=batch_dir,
             on_email_acquired=on_email_acquired,
+            on_password_set=on_password_set,
+            inherited_password=inherited_password,
         )
     if driver_mode in ("cloak", "cloakbrowser"):
         from core.cloakbrowser_registration import run_cloak_registration

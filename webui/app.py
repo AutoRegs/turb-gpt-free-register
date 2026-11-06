@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 from flask import Flask, Response, jsonify, make_response, render_template, request
 import pyotp
 
-from core import account_inspection_service, codex_retry_service, db, plan_check_service, extract_link_service, codex_agent_service, live_check_service
+from core import account_import_service, account_inspection_service, codex_retry_service, db, plan_check_service, extract_link_service, codex_agent_service, live_check_service, payment_service
 from webui.auth import init_auth, register_auth_routes
 from core import registration_service as svc
 from webui import config_editor
@@ -117,7 +117,7 @@ def _compact_account_for_list(row: dict) -> dict:
         "plan_type", "current_plan_type", "plus_trial_eligible",
         "eligible_promo_campaigns", "plus_trial_discount_percentage",
         "plan_check_status", "codex_status", "codex_agent_status",
-        "totp_setup_status",
+        "totp_setup_status", "status",
     ):
         if key in row:
             out[key] = row.get(key)
@@ -131,6 +131,8 @@ def _compact_account_for_list(row: dict) -> dict:
         "plan_check_error", "plan_expires_at", "plan_renews_at", "renews_at",
         "billing_period", "billing_currency", "discount_amount", "discount_type",
         "discount_expires_at", "discount_promo_campaign_id",
+        "rate_limit_label", "rate_limit_window_seconds", "rate_limit_used_percent",
+        "rate_limit_reset_at", "rate_limit_reset_after_seconds",
         "token_expired", "token_expires_at",
         # 查活状态。
         "live_check_status", "live_check_error", "live_checked_at",
@@ -211,7 +213,8 @@ def _compact_job_for_list(row: dict) -> dict:
         "status": row.get("status"),
     }
     for key in (
-        "parent_job_id", "retry_attempt", "email", "started_at", "completed_at",
+        "parent_job_id", "retry_attempt", "job_type", "email", "email_source", "account_id",
+        "started_at", "completed_at",
         "display_status", "retryable", "retry_action", "retry_label",
         "manual_otp_required",
     ):
@@ -336,6 +339,9 @@ def create_app(auth_code: str | None = None) -> Flask:
             recovered_extract_links = db.recover_interrupted_extract_links()
             if recovered_extract_links:
                 logger.warning("已恢复 %s 个因 WebUI 重启中断的提链状态", recovered_extract_links)
+            recovered_payments = db.recover_interrupted_payments()
+            if recovered_payments:
+                logger.warning("已恢复 %s 个因 WebUI 重启中断的代付状态", recovered_payments)
             db.recover_interrupted_account_inspections()
             recovered_live_checks = db.recover_interrupted_live_checks()
             if recovered_live_checks:
@@ -433,6 +439,31 @@ def create_app(auth_code: str | None = None) -> Flask:
             result.update({"ok": True, "page": page, "page_size": page_size, "compact": True})
             return jsonify(result)
         return jsonify(db.list_accounts(limit=limit, archived=archived, plan_filter=plan_filter, codex_filter=codex_filter, q=q, date_from=date_from, date_to=date_to, totp_filter=totp_filter))
+
+    @app.post("/api/accounts/import")
+    def api_accounts_import():
+        """兼容旧客户端的导入地址；实际任务统一进入注册页任务表。"""
+        if request.content_length and request.content_length > 1_000_000:
+            return jsonify({"ok": False, "error": "请求体过大，单次最多提交 1 MB"}), 413
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify({"ok": False, "error": "请求体必须是 JSON 对象"}), 400
+        text = data.get("text") or data.get("content") or ""
+        try:
+            result = account_import_service.submit_import_jobs(str(text), workers=svc.get_executor_workers())
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        account_import_service.clear_finished_tasks()
+        return jsonify({"ok": True, "task_id": result.get("task_id"), "message": "导入任务已提交，请到注册页查看"}), 202
+
+    @app.get("/api/accounts/import/<task_id>")
+    def api_accounts_import_status(task_id: str):
+        """返回导入任务进度和逐账号结果，不返回密码、2FA 或 Token。"""
+        result = account_import_service.get_import_status(task_id)
+        if result is None:
+            return jsonify({"ok": False, "error": "导入任务不存在或已过期"}), 404
+        result["ok"] = True
+        return jsonify(result)
 
     @app.get("/api/accounts/plan-check-status")
     def api_account_plan_check_status():
@@ -550,6 +581,38 @@ def create_app(auth_code: str | None = None) -> Flask:
         skipped.extend(db_skipped)
         return jsonify({"ok": True, "updated": updated, "updated_count": len(updated), "archived": archived, "skipped": skipped})
 
+
+    @app.post("/api/accounts/<int:acc_id>/sold")
+    def api_account_sold(acc_id: int):
+        """标记/取消标记一个账号为已出售。Body {sold: true|false}。"""
+        data = request.get_json(silent=True) or {}
+        sold = bool(data.get("sold", True))
+        updated = db.mark_accounts_sold(account_ids=[acc_id], sold=sold)
+        if not updated:
+            acc = db.get_account(acc_id)
+            if not acc:
+                return jsonify({"ok": False, "error": "账号不存在"}), 404
+        return jsonify({"ok": True, "updated": True, "id": acc_id, "sold": sold})
+
+    @app.post("/api/accounts/sold-bulk")
+    def api_accounts_sold_bulk():
+        """批量标记/取消标记账号为已出售。Body {account_ids:[...], sold:true|false}。"""
+        data = request.get_json(silent=True) or {}
+        ids = data.get("account_ids") or data.get("ids") or []
+        sold = bool(data.get("sold", True))
+        if not isinstance(ids, list) or not ids:
+            return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
+        if len(ids) > 5000:
+            return jsonify({"ok": False, "error": "单次最多操作 5000 个账号"}), 400
+        account_ids = []
+        for raw in ids:
+            try:
+                acc_id = int(raw)
+            except (TypeError, ValueError):
+                continue
+            account_ids.append(acc_id)
+        count = db.mark_accounts_sold(account_ids=account_ids, sold=sold)
+        return jsonify({"ok": True, "updated_count": count, "sold": sold})
     @app.post("/api/accounts/<int:acc_id>/delete")
     def api_account_delete(acc_id: int):
         """删除一个已注册账号记录。只删除本地保存的账号/token记录，不改邮箱池状态。"""
@@ -615,6 +678,8 @@ def create_app(auth_code: str | None = None) -> Flask:
         acc = db.get_account(acc_id)
         if not acc:
             return jsonify({"ok": False, "error": "账号不存在"}), 404
+        if acc.get("status") == "sold":
+            return jsonify({"ok": False, "error": "账号已出售，不可操作"}), 400
         token = str(acc.get("access_token") or "").strip()
         if not token:
             return jsonify({"ok": False, "error": "该账号没有 access_token"}), 400
@@ -656,6 +721,8 @@ def create_app(auth_code: str | None = None) -> Flask:
         acc = db.get_account(acc_id)
         if not acc:
             return jsonify({"ok": False, "error": "账号不存在"}), 404
+        if acc.get("status") == "sold":
+            return jsonify({"ok": False, "error": "账号已出售，不可操作"}), 400
         if not str(acc.get("access_token") or "").strip():
             return jsonify({"ok": False, "error": "账号缺少 access_token，请先查活刷新 AT"}), 400
         from core import email_change_service
@@ -695,6 +762,9 @@ def create_app(auth_code: str | None = None) -> Flask:
             if not str(acc.get("access_token") or "").strip():
                 skipped.append({"id": acc_id, "email": acc.get("email"), "reason": "缺少 access_token"})
                 continue
+            if acc.get("status") == "sold":
+                skipped.append({"id": acc_id, "email": acc.get("email"), "reason": "账号已出售，不可操作"})
+                continue
             result = email_change_service.enqueue(acc_id, source, trigger="manual_bulk")
             if result.get("accepted"):
                 started.append({"id": acc_id, "email": acc.get("email"), "status": "queued"})
@@ -731,6 +801,11 @@ def create_app(auth_code: str | None = None) -> Flask:
             acc = db.get_account(acc_id)
             if not acc:
                 skipped.append({"id": acc_id, "reason": "账号不存在"})
+            if not acc:
+                skipped.append({"id": acc_id, "reason": "账号不存在"})
+                continue
+            if acc.get("status") == "sold":
+                skipped.append({"id": acc_id, "email": acc.get("email"), "reason": "账号已出售，不可操作"})
                 continue
             email = str(acc.get("email") or "").strip()
             token = str(acc.get("access_token") or "").strip()
@@ -900,6 +975,9 @@ def create_app(auth_code: str | None = None) -> Flask:
             if not acc:
                 skipped.append({"id": acc_id, "reason": "账号不存在"})
                 continue
+            if acc.get("status") == "sold":
+                skipped.append({"id": acc_id, "reason": "账号已出售，不可操作"})
+                continue
             email = str(acc.get("email") or "").strip()
             if not email:
                 skipped.append({"id": acc_id, "reason": "邮箱为空"})
@@ -958,6 +1036,8 @@ def create_app(auth_code: str | None = None) -> Flask:
             acc = db.get_account_by_email(email)
         if not acc:
             return jsonify({"ok": False, "error": "账号不存在"}), 404
+        if acc.get("status") == "sold":
+            return jsonify({"ok": False, "error": "账号已出售，不可操作"}), 400
         token = (acc.get("access_token") or "").strip()
         if not token:
             return jsonify({"ok": False, "error": "该账号没有 access_token"}), 400
@@ -1004,6 +1084,9 @@ def create_app(auth_code: str | None = None) -> Flask:
             acc = db.get_account(acc_id)
             if not acc:
                 skipped.append({"id": acc_id, "reason": "账号不存在"})
+                continue
+            if acc.get("status") == "sold":
+                skipped.append({"id": acc_id, "email": acc.get("email"), "reason": "账号已出售，不可操作"})
                 continue
             if not (acc.get("access_token") or "").strip():
                 skipped.append({"id": acc_id, "email": acc.get("email"), "reason": "缺少 access_token"})
@@ -1065,6 +1148,8 @@ def create_app(auth_code: str | None = None) -> Flask:
             acc = None
         if not acc:
             return jsonify({"ok": False, "error": "账号不存在"}), 404
+        if acc.get("status") == "sold":
+            return jsonify({"ok": False, "error": "账号已出售，不可操作"}), 400
         if not _is_extract_eligible(acc):
             return jsonify({"ok": False, "error": "仅支持 free(可Plus试用) 账号提链；请先查询套餐确认资格"}), 400
         token = (acc.get("access_token") or "").strip()
@@ -1115,6 +1200,9 @@ def create_app(auth_code: str | None = None) -> Flask:
             if not acc:
                 skipped.append({"id": acc_id, "reason": "账号不存在"})
                 continue
+            if acc.get("status") == "sold":
+                skipped.append({"id": acc_id, "email": acc.get("email"), "reason": "账号已出售，不可操作"})
+                continue
             email = acc.get("email")
             if not _is_extract_eligible(acc):
                 skipped.append({"id": acc_id, "email": email, "reason": "不是 free(可Plus试用)"})
@@ -1153,6 +1241,105 @@ def create_app(auth_code: str | None = None) -> Flask:
             "skipped": skipped,
             "skipped_count": len(skipped),
         }), 202
+    # ----------------------------------------------------------
+    # 代付服务
+    # ----------------------------------------------------------
+    @app.get("/api/payment/foarge/cdk")
+    def api_payment_foarge_cdk():
+        """查询 Foarge PBK 预付卡密额度。"""
+        code = (request.args.get("code") or "").strip() or None
+        try:
+            client = payment_service.FoargeClient(pbk_key=code)
+            return jsonify({"ok": True, **client.query_cdk(cdk=code)})
+        except Exception as exc:
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 400
+
+    @app.post("/api/accounts/payment")
+    def api_account_payment():
+        """单账号发起代付。Body {account_id|id, channel?}。"""
+        data = request.get_json(silent=True) or {}
+        acc_id = data.get("account_id") or data.get("id")
+        try:
+            acc = db.get_account(int(acc_id))
+        except Exception:
+            acc = None
+        if not acc:
+            return jsonify({"ok": False, "error": "账号不存在"}), 404
+        if acc.get("status") == "sold":
+            return jsonify({"ok": False, "error": "账号已出售，不可操作"}), 400
+        link = (acc.get("extract_link_long_url") or acc.get("extract_link_copy_paste") or "").strip()
+        if not link:
+            return jsonify({"ok": False, "error": "该账号尚未成功提链，缺少支付链接"}), 400
+        token = (acc.get("access_token") or "").strip()
+        if not token:
+            return jsonify({"ok": False, "error": "该账号没有 access_token"}), 400
+        try:
+            queued = payment_service.enqueue_account_payment(
+                account_id=int(acc.get("id")),
+                email=acc.get("email") or "",
+                access_token=token,
+                channel=data.get("channel"),
+                trigger="manual",
+            )
+        except Exception as exc:
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 400
+        if queued.get("busy"):
+            return jsonify({"ok": False, **queued}), 409
+        if not queued.get("accepted"):
+            return jsonify({"ok": False, **queued}), 503
+        return jsonify({"ok": True, "started": True, **{k: v for k, v in queued.items() if k != "future"}}), 202
+
+    @app.post("/api/accounts/payment-bulk")
+    def api_accounts_payment_bulk():
+        """批量代付。Body {account_ids:[...], channel?}。"""
+        data = request.get_json(silent=True) or {}
+        ids = data.get("account_ids") or data.get("ids") or []
+        if not isinstance(ids, list) or not ids:
+            return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
+        if len(ids) > 500:
+            return jsonify({"ok": False, "error": "单次最多批量代付 500 个账号"}), 400
+
+        started = []
+        busy = []
+        failed = []
+        for item in ids:
+            try:
+                acc_id = int(item)
+            except (TypeError, ValueError):
+                continue
+            acc = db.get_account(acc_id)
+            if not acc:
+                failed.append({"id": acc_id, "error": "账号不存在"})
+                continue
+            if acc.get("status") == "sold":
+                failed.append({"id": acc_id, "error": "账号已出售，不可操作"})
+                continue
+            link = (acc.get("extract_link_long_url") or acc.get("extract_link_copy_paste") or "").strip()
+            if not link:
+                failed.append({"id": acc_id, "error": "账号未提链或缺少支付链接"})
+                continue
+            token = (acc.get("access_token") or "").strip()
+            if not token:
+                failed.append({"id": acc_id, "error": "缺少 access_token"})
+                continue
+            try:
+                queued = payment_service.enqueue_account_payment(
+                    account_id=acc_id,
+                    email=acc.get("email") or "",
+                    access_token=token,
+                    channel=data.get("channel"),
+                    trigger="manual_bulk",
+                )
+            except Exception as exc:
+                failed.append({"id": acc_id, "error": str(exc)})
+                continue
+            if queued.get("busy"):
+                busy.append(acc_id)
+            elif queued.get("accepted"):
+                started.append(acc_id)
+            else:
+                failed.append({"id": acc_id, "error": queued.get("error") or "无法入队"})
+        return jsonify({"ok": True, "started_count": len(started), "started": started, "busy_count": len(busy), "busy": busy, "failed_count": len(failed), "failed": failed}), 200
 
     @app.post("/api/accounts/codex-agent")
     def api_account_codex_agent():
@@ -2546,6 +2733,9 @@ def create_app(auth_code: str | None = None) -> Flask:
     @app.get("/api/jobs")
     def api_jobs():
         limit = request.args.get("limit", default=100, type=int)
+        status = str(request.args.get("status", default="") or "").strip().lower() or None
+        date_from = str(request.args.get("date_from", default="") or "").strip() or None
+        date_to = str(request.args.get("date_to", default="") or "").strip() or None
         paged = str(request.args.get("paged", default="") or "").lower() in {"1", "true", "yes"}
         page_arg = request.args.get("page", default=None, type=int)
         page_size_arg = request.args.get("page_size", default=None, type=int)
@@ -2555,7 +2745,11 @@ def create_app(auth_code: str | None = None) -> Flask:
             page = max(1, int(page_arg or 1))
             page_size = max(1, min(500, int(page_size_arg or limit or 50)))
             result = db.list_jobs_page(
-                limit=page_size, offset=(page - 1) * page_size
+                limit=page_size,
+                offset=(page - 1) * page_size,
+                status=status,
+                date_from=date_from,
+                date_to=date_to,
             )
             rows = result.get("items") or []
             for row in rows:
@@ -2565,22 +2759,37 @@ def create_app(auth_code: str | None = None) -> Flask:
             result["items"] = [_compact_job_for_list(r) for r in rows]
             result["compact"] = True
             return jsonify(result)
-        rows = db.list_jobs(limit=max(1, int(limit or 1)))
+        rows = db.list_jobs(limit=max(1, int(limit or 1)), status=status, date_from=date_from, date_to=date_to)
         for row in rows:
             row["manual_otp_required"] = manual_otp_required
         svc.enrich_jobs_retry_info(rows)
-        return jsonify(rows)
+        return jsonify([_compact_job_for_list(row) for row in rows])
 
     @app.post("/api/jobs")
     def api_jobs_create():
         """启动批量注册：body {count, workers}。"""
         data = request.get_json(silent=True) or {}
+        items = data.get("items")
+        if isinstance(items, list):
+            emails = [str(item.get("email") or "").strip() for item in items if str(item.get("email") or "").strip()]
+            passwords = [str(item.get("password") or "").strip() or None for item in items if str(item.get("email") or "").strip()]
+        else:
+            emails = data.get("emails")
+            if isinstance(emails, list):
+                emails = [str(e).strip() for e in emails if str(e).strip()]
+            else:
+                emails = None
+            passwords = data.get("passwords")
+            if isinstance(passwords, list):
+                passwords = [str(p).strip() or None for p in passwords]
+            else:
+                passwords = None
         try:
-            count = int(data.get("count", 1))
+            count = int(len(emails) if emails else data.get("count", 1))
         except (TypeError, ValueError):
             return jsonify({"ok": False, "error": "count 非法"}), 400
-        if count < 1 or count > 200:
-            return jsonify({"ok": False, "error": "count 需在 1~200 之间"}), 400
+        if not emails and (count < 1 or count > 1000):
+            return jsonify({"ok": False, "error": "count 需在 1~1000 之间"}), 400
 
         # workers 控制本次新提交任务使用的线程池；若和上次不同，服务层会为新任务切换到新池。
         try:
@@ -2604,7 +2813,7 @@ def create_app(auth_code: str | None = None) -> Flask:
                     "ok": False,
                     "error": "手动模式建议每次只跑 1 个任务（同一 REGISTER_EMAIL）。请把数量设为 1。",
                 }), 400
-            jobs = svc.submit_registration(count=count, workers=workers)
+            jobs = svc.submit_registration(count=count, email_source=data.get("email_source"), workers=workers, emails=emails, passwords=passwords)
             return jsonify({
                 "ok": True,
                 "submitted": len(jobs),
@@ -2738,8 +2947,33 @@ def create_app(auth_code: str | None = None) -> Flask:
             warning = ""
             if pool.get("available", 0) < count:
                 warning = f"可用邮箱仅 {pool.get('available', 0)} 个，少于任务数 {count}，不足的会失败"
-        jobs = svc.submit_registration(count=count, workers=workers)
+        jobs = svc.submit_registration(count=count, email_source=data.get("email_source"), workers=workers, emails=emails, passwords=passwords)
         return jsonify({"ok": True, "submitted": len(jobs), "jobs": jobs, "warning": warning, "workers": workers})
+
+    @app.post("/api/jobs/import")
+    def api_jobs_import():
+        """在注册页创建批量账号登录任务。凭据只在服务端用于登录和重试。"""
+        if request.content_length and request.content_length > 1_000_000:
+            return jsonify({"ok": False, "error": "请求体过大，单次最多提交 1 MB"}), 413
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify({"ok": False, "error": "请求体必须是 JSON 对象"}), 400
+        text = data.get("text") or data.get("content") or ""
+        try:
+            workers = max(1, min(16, int(data.get("workers", svc.get_executor_workers()))))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "workers 非法"}), 400
+        try:
+            result = account_import_service.submit_import_jobs(str(text), workers=workers)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        account_import_service.clear_finished_tasks()
+        jobs = []
+        for job in result.get("jobs") or []:
+            current = db.get_job(int(job["id"])) or job
+            current.update(svc.get_retry_info(current))
+            jobs.append(_compact_job_for_list(current))
+        return jsonify({"ok": True, "submitted": len(jobs), "jobs": jobs, "task_id": result.get("task_id"), "workers": workers}), 202
 
     @app.get("/api/manual-otp/waiting")
     def api_manual_otp_waiting():
@@ -2791,6 +3025,10 @@ def create_app(auth_code: str | None = None) -> Flask:
         result = svc.retry_job(job_id, workers=workers)
         if not result.get("ok"):
             return jsonify(result), int(result.get("status") or 400)
+        if isinstance(result.get("job"), dict):
+            retry_job = dict(result["job"])
+            retry_job.update(svc.get_retry_info(retry_job))
+            result["job"] = _compact_job_for_list(retry_job)
         return jsonify(result)
 
     @app.post("/api/jobs/retry-bulk")
@@ -2824,8 +3062,16 @@ def create_app(auth_code: str | None = None) -> Flask:
             if not result.get("ok"):
                 skipped.append({"id": one_id, "reason": result.get("error") or "不能重试"})
             elif result.get("reused"):
+                if isinstance(result.get("job"), dict):
+                    reused_job = dict(result["job"])
+                    reused_job.update(svc.get_retry_info(reused_job))
+                    result["job"] = _compact_job_for_list(reused_job)
                 reused.append(result)
             else:
+                if isinstance(result.get("job"), dict):
+                    started_job = dict(result["job"])
+                    started_job.update(svc.get_retry_info(started_job))
+                    result["job"] = _compact_job_for_list(started_job)
                 started.append(result)
         return jsonify({
             "ok": True,
@@ -2895,7 +3141,7 @@ def create_app(auth_code: str | None = None) -> Flask:
             return jsonify({"ok": False, "error": "任务不存在"}), 404
         return jsonify({
             "ok": True,
-            "job": job,
+            "job": _compact_job_for_list(job),
             "log": svc.read_job_log(job_id),
         })
 

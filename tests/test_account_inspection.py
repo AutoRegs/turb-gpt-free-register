@@ -11,6 +11,7 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from config import roxybrowser as roxybrowser_cfg
 from core import account_inspection_service as service, db, plan_check_service as plan_service
 from webui.app import create_app
 
@@ -57,6 +58,9 @@ class AccountInspectionTests(unittest.TestCase):
         lease_patch = patch.object(service, 'acquire_inspection_lease', side_effect=tracked_acquire)
         lease_patch.start()
         self.addCleanup(lease_patch.stop)
+        limit_patch = patch.object(roxybrowser_cfg, 'LIVE_CHECK_PROTOCOL_FAILURE_LIMIT', 4)
+        limit_patch.start()
+        self.addCleanup(limit_patch.stop)
 
     def test_deactivated_is_skipped_before_token_check_and_saved_in_details(self):
         db._ensure_sqlite()

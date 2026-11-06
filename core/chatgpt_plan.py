@@ -19,6 +19,8 @@ from core.session import BrowserSession, close_browser_session
 logger = logging.getLogger(__name__)
 
 ACCOUNTS_CHECK_PATH = "/backend-api/accounts/check/v4-2023-04-27"
+WHAM_USAGE_PATH = "/backend-api/wham/usage"
+MODELS_PATH = "/backend-api/models"
 
 
 def now_iso() -> str:
@@ -377,6 +379,144 @@ def _retry_wait_seconds(resp: Any, base_delay: float, attempt: int) -> float:
     return max(0.0, min(30.0, base_delay * attempt))
 
 
+def format_rate_limit_label(seconds: int | float | None) -> str | None:
+    """把速率限制窗口秒数格式化为易读标签，如 '5小时限'、'周限'。"""
+    if seconds is None:
+        return None
+    try:
+        sec = int(seconds)
+    except (TypeError, ValueError):
+        return None
+    if sec <= 0:
+        return None
+    if sec == 604800:
+        return "周限"
+    if sec == 18000:
+        return "5小时限"
+    if sec == 10800:
+        return "3小时限"
+    if sec == 86400:
+        return "24小时限"
+    if sec % 86400 == 0:
+        days = sec // 86400
+        return "周限" if days == 7 else f"{days}天限"
+    if sec % 3600 == 0:
+        hours = sec // 3600
+        return f"{hours}小时限"
+    if sec % 60 == 0:
+        minutes = sec // 60
+        return f"{minutes}分钟限"
+    return f"{sec}秒限"
+
+
+def parse_rate_limit_payload(data: dict) -> dict:
+    """从 /backend-api/wham/usage 或 /backend-api/models 提取速率限制信息。"""
+    if not isinstance(data, dict):
+        return {}
+    rl = data.get("rate_limit")
+    if not isinstance(rl, dict):
+        models = data.get("models")
+        if isinstance(models, list):
+            for m in models:
+                if not isinstance(m, dict):
+                    continue
+                m_rl = m.get("rate_limit") or m.get("max_rate_limit")
+                if isinstance(m_rl, dict):
+                    rl = m_rl
+                    break
+    if not isinstance(rl, dict):
+        return {}
+
+    primary = rl.get("primary_window") if isinstance(rl.get("primary_window"), dict) else {}
+    window_sec = (
+        primary.get("limit_window_seconds")
+        or primary.get("window_seconds")
+        or rl.get("limit_window_seconds")
+        or rl.get("window_seconds")
+    )
+    label = format_rate_limit_label(window_sec)
+    used_percent = primary.get("used_percent") if "used_percent" in primary else rl.get("used_percent")
+    reset_at = primary.get("reset_at") or rl.get("reset_at")
+    reset_after = primary.get("reset_after_seconds") or rl.get("reset_after_seconds")
+
+    return {
+        "rate_limit_label": label,
+        "rate_limit_window_seconds": int(window_sec) if window_sec is not None else None,
+        "rate_limit_used_percent": used_percent,
+        "rate_limit_reset_at": reset_at,
+        "rate_limit_reset_after_seconds": reset_after,
+        "rate_limit_raw": rl,
+    }
+
+
+def fetch_plus_rate_limit(
+    env: BrowserSession,
+    token: str,
+    claims: dict | None = None,
+    *,
+    account_id: str | None = None,
+    timeout: float = 10.0,
+) -> dict:
+    """仅在确认账号为 Plus 套餐时查询周限或 5 小时限接口。"""
+    aid = str(account_id or (claims or {}).get("account_id") or "").strip()
+    norm_token = normalize_token(token)
+
+    # 1. 优先调用 /backend-api/wham/usage
+    try:
+        headers = env.get_chatgpt_headers(referer="https://chatgpt.com/")
+        headers.pop("content-type", None)
+        headers.update({
+            "authorization": f"Bearer {norm_token}",
+            "x-openai-target-path": WHAM_USAGE_PATH,
+            "x-openai-target-route": WHAM_USAGE_PATH,
+        })
+        if aid:
+            headers["chatgpt-account-id"] = aid
+        resp = env.get(f"https://chatgpt.com{WHAM_USAGE_PATH}", headers=headers, timeout=timeout)
+        if resp is not None and getattr(resp, "status_code", 0) == 200:
+            try:
+                data = resp.json()
+            except Exception:
+                data = json.loads(getattr(resp, "text", "") or "{}")
+            if isinstance(data, dict):
+                parsed = parse_rate_limit_payload(data)
+                if parsed and parsed.get("rate_limit_label"):
+                    logger.info("[Plan] Plus 速率限制查询成功 (wham/usage): %s", parsed.get("rate_limit_label"))
+                    return parsed
+    except Exception as exc:
+        logger.debug("[Plan] wham/usage 速率限制查询异常: %s: %s", type(exc).__name__, exc)
+    finally:
+        _clear_plan_circuit(env)
+
+    # 2. 回退调用 /backend-api/models
+    try:
+        headers = env.get_chatgpt_headers(referer="https://chatgpt.com/")
+        headers.pop("content-type", None)
+        headers.update({
+            "authorization": f"Bearer {norm_token}",
+            "x-openai-target-path": MODELS_PATH,
+            "x-openai-target-route": MODELS_PATH,
+        })
+        if aid:
+            headers["chatgpt-account-id"] = aid
+        url = f"https://chatgpt.com{MODELS_PATH}?iim=false&is_gizmo=false&supports_model_picker_upgrade_presets=true"
+        resp = env.get(url, headers=headers, timeout=timeout)
+        if resp is not None and getattr(resp, "status_code", 0) == 200:
+            try:
+                data = resp.json()
+            except Exception:
+                data = json.loads(getattr(resp, "text", "") or "{}")
+            if isinstance(data, dict):
+                parsed = parse_rate_limit_payload(data)
+                if parsed and parsed.get("rate_limit_label"):
+                    logger.info("[Plan] Plus 速率限制查询成功 (models): %s", parsed.get("rate_limit_label"))
+                    return parsed
+    except Exception as exc:
+        logger.debug("[Plan] models 速率限制查询异常: %s: %s", type(exc).__name__, exc)
+    finally:
+        _clear_plan_circuit(env)
+
+    return {}
 def check_account_plan(
     token: str,
     *,
@@ -505,6 +645,19 @@ def check_account_plan(
                         }
                     else:
                         parsed = parse_accounts_check(data, token=token)
+                        # 仅在确认套餐为 Plus 时，才去查询周限或 5 小时限接口
+                        plan_type = str(parsed.get("current_plan_type") or "").strip().lower()
+                        sub_plan = str(parsed.get("subscription_plan") or "").strip().lower()
+                        if "plus" in plan_type or "plus" in sub_plan:
+                            rate_limit_info = fetch_plus_rate_limit(
+                                env,
+                                token,
+                                claims=claims,
+                                account_id=parsed.get("account_id"),
+                                timeout=timeout_seconds,
+                            )
+                            if rate_limit_info:
+                                parsed.update(rate_limit_info)
                         parsed["http_status"] = http_status
                         parsed["attempt_count"] = attempt
                         parsed["max_attempts"] = attempts

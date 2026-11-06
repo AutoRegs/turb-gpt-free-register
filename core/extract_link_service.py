@@ -256,14 +256,22 @@ def _extract_error_message(data) -> str:
 
 
 def _format_failure_reason(exc: Exception, logs: list[str] | None = None, last_event: dict | None = None) -> str:
-    reason = f"{type(exc).__name__}: {str(exc)}".strip()
-    if (not str(exc).strip()) and logs:
-        reason = str(logs[-1])
-    if last_event and "提链事件流结束但未返回 result" in reason:
+    raw = str(exc).strip()
+    if not raw and logs:
+        raw = str(logs[-1]).strip()
+    if not raw:
+        raw = type(exc).__name__
+    import re
+    cleaned = re.sub(r"^[A-Za-z_]+Error:\s*", "", raw).strip()
+    if not cleaned:
+        cleaned = raw
+    if last_event and "提链事件流结束但未返回 result" in cleaned:
         extracted = _extract_error_message(last_event.get("data"))
         if extracted:
-            reason = f"提链事件流结束但未返回 result；最后事件 {last_event.get('event')}: {extracted}"
-    return reason[:500]
+            extracted_clean = re.sub(r"^[A-Za-z_]+Error:\s*", "", extracted).strip()
+            cleaned = f"提链事件流结束但未返回 result；最后事件 {last_event.get('event')}: {extracted_clean}"
+    cleaned = re.sub(r"^提链失败[:：]\s*", "", cleaned).strip()
+    return f"提链失败：{cleaned}"[:500]
 
 
 def _run_extract(*, account_id: int, email: str, access_token: str, link_type: str, cdk: str, trigger: str) -> dict:
@@ -302,6 +310,26 @@ def _run_extract(*, account_id: int, email: str, access_token: str, link_type: s
                 final = {"ok": True, "status": "success", "job_id": job_id, "link_type": link_type, "result": result, "logs": logs}
                 db.update_account_extract(account_id, final)
                 logger.info("[提链] 成功: %s type=%s job=%s", email, link_type, job_id)
+                # 提链成功后，若开启自动代付，自动将账号与链接推送至支付渠道
+                try:
+                    from core import payment_service
+                    if payment_service.is_auto_pay_enabled():
+                        extracted_url = str((result or {}).get("long_url") or (result or {}).get("copy_paste") or "").strip()
+                        extracted_method = str((result or {}).get("payment_method") or (result or {}).get("payment_link_type") or link_type or "").strip()
+                        enqueue_res = payment_service.enqueue_account_payment(
+                            account_id=account_id,
+                            email=email,
+                            access_token=access_token,
+                            pay_link=extracted_url,
+                            payment_method=extracted_method,
+                            trigger="auto_after_extract",
+                        )
+                        if not enqueue_res.get("accepted"):
+                            logger.warning("[提链] 自动代付入队未成功: %s, 原因: %s", email, enqueue_res.get("error"))
+                        else:
+                            logger.info("[提链] 提链成功，已自动触发代付入队: %s", email)
+                except Exception as auto_pay_exc:
+                    logger.warning("[提链] 自动触发代付异常: %s", auto_pay_exc)
                 return final
             elif event == "error":
                 msg = _extract_error_message(data)
@@ -325,10 +353,16 @@ def _run_extract(*, account_id: int, email: str, access_token: str, link_type: s
         logger.exception("[提链] 失败: %s", email)
         return result
     finally:
-        _QUEUE_SLOTS.release()
+        try:
+            _QUEUE_SLOTS.release()
+        except ValueError:
+            pass
 
 
 def enqueue_account_extract(*, account_id: int, email: str, access_token: str, trigger: str = "manual", link_type: str | None = None, cdk: str | None = None) -> dict:
+    acc = db.get_account(account_id)
+    if acc and acc.get("status") == "sold":
+        return {"accepted": False, "busy": False, "error": "账号已出售，不可操作"}
     if not _QUEUE_SLOTS.acquire(blocking=False):
         return {"accepted": False, "busy": False, "error": "提链队列已满"}
     try:
@@ -336,6 +370,9 @@ def enqueue_account_extract(*, account_id: int, email: str, access_token: str, t
         code = _cdk(cdk)
         if not db.claim_account_extract(account_id, trigger=trigger, link_type=lt):
             _QUEUE_SLOTS.release()
+            acc = db.get_account(account_id)
+            if acc and acc.get("status") == "sold":
+                return {"accepted": False, "busy": False, "error": "账号已出售，不可操作"}
             return {"accepted": False, "busy": True, "error": "该账号正在提链中"}
         fut = _EXECUTOR.submit(_run_extract, account_id=account_id, email=email, access_token=access_token, link_type=lt, cdk=code, trigger=trigger)
         return {"accepted": True, "busy": False, "future": fut, "link_type": lt}

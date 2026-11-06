@@ -223,6 +223,9 @@ def enqueue_account_totp_setup(
         return {"accepted": False, "busy": False, "error": "email 为空"}
     if not access_token:
         return {"accepted": False, "busy": False, "error": "缺少 access_token"}
+    acc = db.get_account(account_id)
+    if acc and acc.get("status") == "sold":
+        return {"accepted": False, "busy": False, "error": "账号已出售，不可操作"}
     if not bool(getattr(_email_cfg, "USE_EMAIL_SERVICE", False)):
         return {"accepted": False, "busy": False, "error": "启用 2FA 需要先开启 USE_EMAIL_SERVICE 自动收取邮箱验证码"}
     with _LOCK:
@@ -231,6 +234,9 @@ def enqueue_account_totp_setup(
         _OUTSTANDING += 1
     if not db.claim_account_totp_setup(acc_id=account_id, trigger=trigger):
         _release_outstanding()
+        acc = db.get_account(account_id)
+        if acc and acc.get("status") == "sold":
+            return {"accepted": False, "busy": False, "error": "账号已出售，不可操作"}
         return {"accepted": False, "busy": True, "error": "该账号正在设置 2FA"}
 
     _append_log(email, f"[2FA] 已入队 account_id={account_id} trigger={trigger}", clear=True)

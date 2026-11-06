@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -403,7 +404,7 @@ def _build_cloak_locale_options(proxy_url: str | None = None) -> dict:
     return {k: v for k, v in out.items() if v}
 
 
-def build_cloak_driver(proxy: str | None = None) -> tuple[CloakSeleniumDriver, CloakOpenResult]:
+def build_cloak_driver(proxy: str | None = None, *, fresh: bool = False) -> tuple[CloakSeleniumDriver, CloakOpenResult]:
     """启动 CloakBrowser 并返回 Selenium 风格 driver。
 
     proxy=None  时按 config.proxy.PROXY_POOL 随机抽取；
@@ -435,6 +436,9 @@ def build_cloak_driver(proxy: str | None = None) -> tuple[CloakSeleniumDriver, C
 
     launch_args = list(getattr(_cfg, "CLOAK_EXTRA_ARGS", []) or [])
     seed = str(getattr(_cfg, "CLOAK_FINGERPRINT_SEED", "") or "").strip()
+    if fresh:
+        launch_args = [arg for arg in launch_args if not str(arg).startswith("--fingerprint=")]
+        seed = str(uuid.uuid4().int % 2_147_483_647)
     if seed:
         launch_args.append(f"--fingerprint={seed}")
 
@@ -461,6 +465,8 @@ def build_cloak_driver(proxy: str | None = None) -> tuple[CloakSeleniumDriver, C
         opts["license_key"] = license_key
 
     user_data_dir = str(getattr(_cfg, "CLOAK_USER_DATA_DIR", "") or "").strip()
+    if fresh:
+        user_data_dir = ""
     logger.info(
         "[Cloak] 启动 CloakBrowser：headless=%s humanize=%s geoip=%s proxy=%s locale=%s timezone=%s accept_language=%s persistent=%s",
         opts.get("headless"), opts.get("humanize"), opts.get("geoip"),

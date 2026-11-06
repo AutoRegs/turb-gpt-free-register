@@ -25,6 +25,18 @@ class RoxyLocalAssetCacheTests(unittest.TestCase):
         self.assertTrue(RoxyLocalAssetCache.is_cacheable(
             "https://cdn.oaistatic.com/assets/font.woff2", "Font"
         ))
+        self.assertTrue(RoxyLocalAssetCache.is_cacheable(
+            "https://chatgpt.com/cdn/assets/zh-CN.c4914bff40.json", "Other"
+        ))
+        self.assertTrue(RoxyLocalAssetCache.is_cacheable(
+            "https://chatgpt.com/_next/static/locales/en.json", "Fetch"
+        ))
+        self.assertFalse(RoxyLocalAssetCache.is_cacheable(
+            "https://chatgpt.com/backend-api/accounts.json", "Fetch"
+        ))
+        self.assertFalse(RoxyLocalAssetCache.is_cacheable(
+            "https://chatgpt.com/ces/v1/rgstr.json", "Fetch"
+        ))
         self.assertFalse(RoxyLocalAssetCache.is_cacheable(
             "https://chatgpt.com/auth/login", "Document"
         ))

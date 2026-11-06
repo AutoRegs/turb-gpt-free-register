@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""账号查活后台队列：协议 BrowserSession 指纹环境 + 独立日志。"""
+"""账号查活后台队列：协议优先，连续失败后切换配置的浏览器。"""
 from __future__ import annotations
 
 import logging
@@ -18,6 +18,16 @@ logger = logging.getLogger(__name__)
 
 _WORKERS = 3
 _QUEUE_LIMIT = 500
+_PROTOCOL_FAILURE_LIMIT = 4
+
+
+def _protocol_failure_limit() -> int:
+    try:
+        from config import roxybrowser as browser_cfg
+        val = getattr(browser_cfg, "LIVE_CHECK_PROTOCOL_FAILURE_LIMIT", 4)
+        return max(1, min(20, int(val or 4)))
+    except Exception:
+        return 4
 _EXECUTOR = ThreadPoolExecutor(max_workers=_WORKERS, thread_name_prefix="live-check")
 _QUEUE_SLOTS = threading.BoundedSemaphore(_QUEUE_LIMIT)
 _RUNNING: set[int] = set()
@@ -33,7 +43,7 @@ def _configured_live_check_proxies(proxy_cfg) -> list[str]:
     values = list(getattr(proxy_cfg, "PLAN_CHECK_PROXY", []) or [])
     if not values:
         values = list(getattr(proxy_cfg, "PROXY_POOL", []) or [])
-    return [str(value).strip() for value in values if str(value).strip()]
+    return list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
 
 
 def _live_proxy_route(proxy_url: str, proxy_cfg) -> dict:
@@ -107,6 +117,34 @@ def complete_authenticated_live_check(*, account_id: int, expected_account: dict
     return result
 
 
+def _login_attempt(*, account_id: int, email: str, proxy: str | None, driver_mode: str,
+                   email_source: str | None, fingerprint_state: dict, on_authenticated=None) -> tuple[dict, int]:
+    """一次完整登录结束后立即落库，内部 HTTP/验证码重试不单独计数。"""
+    result = check_account_liveness(
+        email, proxy=proxy, clear_log=False, email_source=email_source,
+        fingerprint_state=fingerprint_state, driver_mode=driver_mode,
+        account_id=account_id, on_authenticated=on_authenticated,
+    )
+    failures = db.record_account_live_check_login_attempt(account_id, result, driver_mode=driver_mode)
+    if failures is None:
+        raise RuntimeError("查活账号已删除，取消后续登录")
+    result = dict(result, login_driver=driver_mode, protocol_failures=failures)
+    if driver_mode != "protocol":
+        traffic = result.get("network_traffic")
+        if isinstance(traffic, dict) and traffic.get("available"):
+            up = float(traffic.get("upload_bytes") or 0) / 1048576
+            down = float(traffic.get("download_bytes") or 0) / 1048576
+            tot = float(traffic.get("total_bytes") or 0) / 1048576
+            observed = float(traffic.get("browser_observed_total_bytes", traffic.get("total_bytes") or 0)) / 1048576
+            lbl = traffic.get("label") or "Roxy"
+            _safe_append_log(email, f"[{lbl}] 代理传输流量：上传 {up:.2f} MiB，下载 {down:.2f} MiB，总计 {tot:.2f} MiB；页面可见 {observed:.2f} MiB")
+    if result.get("ok"):
+        _safe_append_log(email, "[查活] 登录成功，连续协议失败次数已清零；下次优先使用纯协议")
+    elif driver_mode == "protocol" and result.get("status") != "deactivated":
+        _safe_append_log(email, f"[查活] 连续协议登录失败：{failures}/{_protocol_failure_limit()}")
+    return result, failures
+
+
 def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: str, run_id: str | None = None) -> dict:
     relay = None
     expected_account = {"email": email}
@@ -124,7 +162,7 @@ def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: 
         if not db.mark_account_live_check_running(account_id, run_id=run_id):
             _safe_append_log(email, "[查活] 账号已删除或查活状态已被重置，取消执行")
             return {"ok": False, "status": "failed", "error": "账号已删除或查活状态已被重置"}
-        from config import proxy as proxy_cfg
+        from config import proxy as proxy_cfg, roxybrowser as browser_cfg
         candidates = _configured_live_check_proxies(proxy_cfg)
         route = resolve_plan_check_route(explicit_proxy=proxy)
         # 查活规则独立于套餐查询的 direct/auto 选择：只要任一代理池有数据，
@@ -143,8 +181,19 @@ def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: 
             return result
         expected_account = {"email": email, "access_token": account.get("access_token", "")}
         email_source = str(account.get("email_source") or "").strip() or None
+        # “import” 只是账号列表展示来源，不对应邮箱取码通道；导入账号正常会
+        # 走密码 + TOTP，若回退到邮箱 OTP 则按全局/账号可识别来源兜底。
+        if email_source == "import":
+            email_source = None
         if email_source:
             _safe_append_log(email, f"[查活] 使用注册时保存的邮箱来源：{email_source}")
+        failures = max(0, int(account.get("live_check_protocol_failures") or 0))
+        browser_driver = str(getattr(browser_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
+        _safe_append_log(
+            email,
+            f"[查活] 登录策略：纯协议优先，连续失败 {_protocol_failure_limit()} 次切换浏览器；"
+            f"当前连续失败={failures}，配置驱动={browser_driver}",
+        )
         _safe_append_log(
             email,
             "[查活] 开始后台执行 "
@@ -152,9 +201,11 @@ def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: 
             f"proxy_mode={route.get('proxy_mode')} proxy_used={route.get('proxy_used') or '-'} "
             f"fallback_reason={route.get('proxy_fallback_reason') or '-'}"
         )
-        # 每个代理出口使用独立 BrowserSession/指纹/Cookie。网络类失败后换池中
-        # 尚未使用的代理；池非空时绝不直连。
+        # 协议在每个出口使用独立会话；Roxy 优先沿用账号环境并更新代理。
+        # 网络类失败后换池中尚未使用的代理；池非空时绝不直连。
         max_routes = max(1, int(getattr(proxy_cfg, "PLAN_CHECK_MAX_ATTEMPTS", 3) or 3))
+        if candidates:
+            max_routes = min(max_routes, len(set(candidates + ([selected_proxy] if selected_proxy else []))))
         used_proxies: set[str] = set()
         result: dict = {"ok": False, "status": "failed", "error": "查活未执行"}
         for route_attempt in range(1, max_routes + 1):
@@ -169,16 +220,27 @@ def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: 
                 f"[查活] 网络出口尝试 {route_attempt}/{max_routes}："
                 f"{_mask_proxy(selected_proxy) or 'direct'}",
             )
-            # 占用属于本次出口尝试，不得沿用上一次失败回调的完成标志。
             completed_in_session = False
-            result = check_account_liveness(
-                email,
-                proxy=effective_proxy,
-                clear_log=False,
-                email_source=email_source,
+            driver = browser_driver if failures >= _protocol_failure_limit() else "protocol"
+            result, failures = _login_attempt(
+                account_id=account_id, email=email, proxy=effective_proxy,
+                driver_mode=driver, email_source=email_source,
                 fingerprint_state={"force_fresh": route_attempt > 1},
                 on_authenticated=authenticated,
             )
+            if (driver == "protocol" and not result.get("ok")
+                    and result.get("status") != "deactivated" and failures >= _protocol_failure_limit()):
+                if browser_driver != "protocol":
+                    # 第四次失败立即切换，不受当前代理出口重试预算限制。
+                    # 保留该出口的代理中继，Roxy 优先复用当前账号的旧环境。
+                    _append_log(email, f"[查活] 连续协议失败达到阈值，立即切换指纹浏览器：{browser_driver}")
+                    result, failures = _login_attempt(
+                        account_id=account_id, email=email, proxy=effective_proxy,
+                        driver_mode=browser_driver, email_source=email_source,
+                        fingerprint_state={"force_fresh": True},
+                    )
+                else:
+                    _append_log(email, "[查活] 未配置指纹浏览器（注册方式为 protocol），继续保留纯协议登录")
             if relay is not None:
                 _close_relay(relay)
                 relay = None
@@ -272,6 +334,9 @@ def enqueue_account_live_check(*, account_id: int, email: str, trigger: str = "m
     email = str(email or "").strip()
     if not email:
         return {"accepted": False, "busy": False, "error": "email 为空"}
+    acc = db.get_account(account_id)
+    if acc and acc.get("status") == "sold":
+        return {"accepted": False, "busy": False, "error": "账号已出售，不可操作"}
     with _LOCK:
         if account_id in _RUNNING:
             return {"accepted": False, "busy": True, "error": "该账号正在查活"}
@@ -292,6 +357,9 @@ def enqueue_account_live_check(*, account_id: int, email: str, trigger: str = "m
         with _LOCK:
             _RUNNING.discard(account_id)
         _QUEUE_SLOTS.release()
+        acc = db.get_account(account_id)
+        if acc and acc.get("status") == "sold":
+            return {"accepted": False, "busy": False, "error": "账号已出售，不可操作"}
         return {"accepted": False, "busy": True, "error": "该账号正在查活"}
 
     try:

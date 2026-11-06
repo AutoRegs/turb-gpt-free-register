@@ -170,6 +170,9 @@ def _release_cancelled_check(future, account_id: int, run_id: str | None = None)
 
 def _claim_plan_slot(account_id: int, trigger: str, *, run_id: str) -> dict | None:
     """同一占用逻辑用于手动队列与查活会话内同步查询。"""
+    acc = db.get_account(account_id)
+    if acc and acc.get("status") == "sold":
+        return {"accepted": False, "busy": False, "error": "账号已出售，不可操作"}
     with _LOCK:
         if account_id in _RUNNING:
             return {"accepted": False, "busy": True, "error": "该账号正在查询套餐"}
@@ -190,6 +193,9 @@ def _claim_plan_slot(account_id: int, trigger: str, *, run_id: str) -> dict | No
         with _LOCK:
             _RUNNING.discard(account_id)
         _QUEUE_SLOTS.release()
+        acc = db.get_account(account_id)
+        if acc and acc.get("status") == "sold":
+            return {"accepted": False, "busy": False, "error": "账号已出售，不可操作"}
         return {"accepted": False, "busy": True, "error": "该账号正在查询套餐"}
 
     return None

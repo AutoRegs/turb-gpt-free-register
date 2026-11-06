@@ -73,6 +73,14 @@ class AccountLivenessTests(unittest.TestCase):
         rate_patch.start()
         self.addCleanup(rate_patch.stop)
         _DummyBrowserSession.created = []
+        # 本类验证纯协议查活，不能受开发机 .env 中的浏览器/指纹开关影响。
+        for name, value in (
+            ("config.roxybrowser.REGISTRATION_DRIVER", "protocol"),
+            ("config.register.PROTOCOL_REUSE_FINGERPRINT_BY_EMAIL", False),
+        ):
+            setting = patch(name, value)
+            setting.start()
+            self.addCleanup(setting.stop)
 
     def test_preflight_preserves_explicit_direct_route_and_skips_providers(self):
         with patch.object(liveness, "BrowserSession", _DummyBrowserSession), \
@@ -388,6 +396,7 @@ class AccountLivenessTests(unittest.TestCase):
         with patch.object(live_service, "_QUEUE_SLOTS", slot), \
              patch.object(live_service.db, "mark_account_live_check_running", return_value=True), \
              patch.object(live_service.db, "get_account", return_value={"email": "user@example.com", "email_source": "remail"}), \
+             patch.object(live_service.db, "record_account_live_check_login_attempt", side_effect=[1, 0]), \
              patch.object(live_service.db, "update_account_liveness"), \
              patch.object(live_service, "_append_log"), \
              patch.object(live_service, "resolve_plan_check_route", side_effect=route_for), \
@@ -429,6 +438,7 @@ class AccountLivenessTests(unittest.TestCase):
         with patch.object(live_service, "_QUEUE_SLOTS", slot), \
              patch.object(live_service.db, "mark_account_live_check_running", return_value=True), \
              patch.object(live_service.db, "get_account", return_value={"email": "user@example.com"}), \
+             patch.object(live_service.db, "record_account_live_check_login_attempt", return_value=1), \
              patch.object(live_service.db, "update_account_liveness"), \
              patch.object(live_service, "_append_log"), \
              patch.object(live_service, "resolve_plan_check_route", return_value=route), \

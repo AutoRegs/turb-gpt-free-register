@@ -107,10 +107,11 @@ def configured_url_patterns() -> list[str]:
     result: list[str] = []
     # URL path 可能区分大小写，不能像 resource_type 一样统一转小写。
     for item in _as_items(raw, lower=False):
+        if item == "**://chatgpt.com/ces/statsc/flush**":
+            item = "**://chatgpt.com/ces/**"
         if item not in result:
             result.append(item)
     return result
-
 
 def _is_challenge_url(url: str) -> bool:
     lower = str(url or "").lower()
@@ -299,6 +300,7 @@ class BrowserDataSaver:
             "*://oaistatic.com/*", "*://*.oaistatic.com/*",
             "*://chatgpt.com/ces/*", "*://www.chatgpt.com/ces/*",
             "*://auth.openai.com/awe/api/v2/rum*", "*://chatgpt.com/awe/api/v2/rum*",
+            "*://chatgpt.com/backend-api/*", "*://www.chatgpt.com/backend-api/*",
         ]
         patterns = list(dict.fromkeys(self._selenium_patterns + patterns))
         try:

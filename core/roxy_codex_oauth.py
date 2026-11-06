@@ -13,7 +13,8 @@ from core.email_provider import wait_for_otp
 from core.humanize import delay as human_delay
 from core import sms_provider
 from core.openai_auth import AccountUnusableError, detect_account_unusable_response_body
-from core.roxybrowser_client import RoxyBrowserClient
+from core.roxybrowser_client import RoxyBrowserClient, RoxyProfileMissingError, RoxyProfileReuseUnavailableError
+from core import db
 from core import codex_oauth as _codex_proto
 from core.roxy_registration import (
     _build_driver,
@@ -275,9 +276,13 @@ def _is_mfa_challenge_page(driver) -> bool:
         return False
 
 
-def _fill_mfa_challenge_if_present(driver, email: str, timeout: int = 15) -> bool:
+def _fill_mfa_challenge_if_present(driver, email: str, timeout: int = 15, *, totp_secret: str | None = None) -> bool:
     """如果当前进入 MFA challenge 页面，自动填入账号 TOTP 并提交。"""
-    code = _account_totp_code_for_email(email)
+    if totp_secret is not None:
+        from core.account_liveness import _totp_code_from_secret
+        code = _totp_code_from_secret(totp_secret)
+    else:
+        code = _account_totp_code_for_email(email)
     if not code:
         return False
     end = time.time() + timeout
@@ -317,9 +322,12 @@ def _fill_mfa_challenge_if_present(driver, email: str, timeout: int = 15) -> boo
     return False
 
 
-def _fill_login_password_if_present(driver, email: str, timeout: int = 18) -> str | None:
+def _fill_login_password_if_present(
+    driver, email: str, timeout: int = 18, *,
+    password: str | None = None, totp_secret: str | None = None,
+) -> str | None:
     """Codex OAuth 若账号有密码，优先在登录密码页输入密码。返回 next_step / email_otp / None。"""
-    password = _account_password_for_email(email)
+    password = password if password is not None else _account_password_for_email(email)
     if not password:
         return None
     end = time.time() + timeout
@@ -362,7 +370,10 @@ def _fill_login_password_if_present(driver, email: str, timeout: int = 18) -> st
         wait_end = time.time() + 12
         while time.time() < wait_end:
             if _is_mfa_challenge_page(driver):
-                _fill_mfa_challenge_if_present(driver, email, timeout=15)
+                if totp_secret is None:
+                    _fill_mfa_challenge_if_present(driver, email, timeout=15)
+                else:
+                    _fill_mfa_challenge_if_present(driver, email, timeout=15, totp_secret=totp_secret)
                 return "next_step"
             if _is_email_verification_page(driver):
                 return "email_otp"
@@ -370,6 +381,101 @@ def _fill_login_password_if_present(driver, email: str, timeout: int = 18) -> st
                 return "next_step"
             time.sleep(0.5)
         return "next_step"
+    return None
+
+def _is_choose_an_account_page(driver) -> bool:
+    try:
+        url = str(driver.current_url or "").lower()
+        if "choose-an-account" in url:
+            return True
+        return bool(driver.execute_script(r"""
+        const url = String(location.href || '').toLowerCase();
+        if (url.includes('choose-an-account')) return true;
+        const bodyText = (document.body ? document.body.innerText || '' : '').toLowerCase();
+        if (bodyText.includes('choose an account') || bodyText.includes('选择账号') || bodyText.includes('アカウントを選択')) return true;
+        const sessionBtn = document.querySelector('button[name="session_id"], [data-testid="account-card"], [data-session-id]');
+        return !!sessionBtn;
+        """))
+    except Exception:
+        return False
+
+
+def _handle_choose_an_account_page(driver, email: str, timeout: int = 10) -> bool:
+    """如果当前处于 Choose an account 页面，自动点击匹配当前邮箱的账号卡片继续。"""
+    if not _is_choose_an_account_page(driver):
+        return False
+    logger.info("[Codex][Browser] 检测到账号选择页（choose-an-account），寻找匹配账号：%s", email)
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            result = driver.execute_script(r"""
+            const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+              && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none'
+              && !el.disabled && el.getAttribute('aria-disabled') !== 'true';
+
+            const targetEmail = String(arguments[0] || '').toLowerCase().trim();
+            const prefix = targetEmail.split('@')[0];
+
+            const allButtons = [...document.querySelectorAll('button, a, [role="button"]')].filter(visible);
+
+            // 1. 优先寻找文本中包含 targetEmail 或 prefix 的账号卡片
+            let matched = null;
+            if (targetEmail) {
+                matched = allButtons.find(el => {
+                    const text = (el.innerText || el.textContent || '').toLowerCase();
+                    return text.includes(targetEmail) || (prefix && prefix.length >= 3 && text.includes(prefix));
+                });
+            }
+
+            // 2. 如果没通过文本找到，查找带有 session_id 或 account 相关属性的按钮
+            if (!matched) {
+                const sessionCards = allButtons.filter(el => {
+                    const name = (el.getAttribute('name') || '').toLowerCase();
+                    const testid = (el.getAttribute('data-testid') || '').toLowerCase();
+                    const cls = String(el.className || '').toLowerCase();
+                    const href = (el.getAttribute('href') || '').toLowerCase();
+                    return name === 'session_id' || testid.includes('account') || cls.includes('session_id') || href.includes('session_id');
+                });
+                if (sessionCards.length === 1) {
+                    matched = sessionCards[0];
+                }
+            }
+
+            if (matched) {
+                matched.scrollIntoView({block: 'center'});
+                matched.click();
+                return {ok: true, clicked: true, text: (matched.innerText || '').slice(0, 80)};
+            }
+
+            return {ok: false, reason: 'no_matched_card', count: allButtons.length};
+            """, email)
+            if result and result.get("clicked"):
+                logger.info("[Codex][Browser] 已点击选择账号卡片：%s (info=%s)", email, result.get("text"))
+                time.sleep(2.5)
+                return True
+        except Exception as exc:
+            logger.debug("[Codex][Browser] 处理 choose-an-account 异常: %s", exc)
+        time.sleep(0.5)
+    return False
+
+
+def _handle_post_login_or_choose_steps(driver, email: str, timeout: int = 18) -> str | None:
+    """在提交邮箱或点击账号卡片后，处理可能出现的密码、MFA 或后续跳转。"""
+    end = time.time() + timeout
+    while time.time() < end:
+        if _is_login_password_page(driver):
+            logger.info("[Codex][Browser] 检测到登录密码页，自动输入密码")
+            return _fill_login_password_if_present(driver, email, timeout=12)
+        if _is_mfa_challenge_page(driver):
+            logger.info("[Codex][Browser] 检测到 MFA 验证页，自动输入 TOTP")
+            _fill_mfa_challenge_if_present(driver, email, timeout=15)
+            return "next_step"
+        if _is_email_verification_page(driver):
+            return "email_otp"
+        curr = str(driver.current_url or "").lower()
+        if "callback" in curr or "localhost" in curr or "oauth/consent" in curr:
+            return "next_step"
+        time.sleep(0.5)
     return None
 
 
@@ -381,6 +487,19 @@ def _fill_email_and_otp(driver, email: str, otp_provider, auth_url: str) -> None
     human_delay("navigate")
     logger.info("[Codex][Browser] 授权页加载完成，检查是否需要邮箱登录")
     _maybe_accept(driver)
+
+    # 优先检测是否进入了账号选择页（choose-an-account）
+    if _is_choose_an_account_page(driver):
+        if _handle_choose_an_account_page(driver, email, timeout=8):
+            step = _handle_post_login_or_choose_steps(driver, email, timeout=15)
+            if step == "next_step":
+                logger.info("[Codex][Browser] 选择账号后已完成登录/进入下一步，直接进入后续步骤")
+                return
+            if step != "email_otp":
+                curr = str(driver.current_url or "").lower()
+                if "oauth/consent" in curr or "callback" in curr or "localhost" in curr or not ("auth.openai.com/choose-an-account" in curr or "auth.openai.com/log-in" in curr):
+                    logger.info("[Codex][Browser] 选择账号后页面已进入后续流程: %s", curr)
+                    return
 
     # 可能已经处于账号选择/授权页；如果有邮箱输入框则完整登录。
     # 非日本出口时按钮文案/顺序会变，不能按可见文字点“继续”，否则可能误点 Google。
@@ -401,9 +520,15 @@ def _fill_email_and_otp(driver, email: str, otp_provider, auth_url: str) -> None
         else:
             _maybe_click_passwordless_after_email(driver, email, timeout=18)
     except Exception as exc:
+        # 未找到邮箱输入框时，二次兜底检查是否落入了账号选择页
+        if _is_choose_an_account_page(driver):
+            if _handle_choose_an_account_page(driver, email, timeout=8):
+                step = _handle_post_login_or_choose_steps(driver, email, timeout=15)
+                if step == "next_step":
+                    logger.info("[Codex][Browser] 兜底选择账号后已完成登录，直接进入后续步骤")
+                    return
         logger.info("[Codex][Browser] 未检测到邮箱输入框，可能已登录或进入下一步：%s", str(exc)[:120])
         return
-
     # 提交邮箱后不再执行任何全局“继续/授权/分支”兜底点击；后续只等待验证码页。
     # 避免页面已进入 OAuth consent 时误点授权按钮。
 
@@ -1319,7 +1444,7 @@ def _do_phone_verification_if_present(driver) -> None:
             pass
 
 
-def _finish_consent_workspace(driver) -> str:
+def _finish_consent_workspace(driver, email: str = "") -> str:
     """点击 Codex consent/workspace 页面里的继续/允许按钮，直到 callback。"""
     end = time.time() + int(_roxy_cfg.ROXY_CODEX_CALLBACK_TIMEOUT)
     while time.time() < end:
@@ -1327,6 +1452,16 @@ def _finish_consent_workspace(driver) -> str:
         if callback:
             return callback
         current = str(driver.current_url or "")
+        if "choose-an-account" in current.lower() and email:
+            if _handle_choose_an_account_page(driver, email, timeout=4):
+                _handle_post_login_or_choose_steps(driver, email, timeout=8)
+                continue
+        if _is_login_password_page(driver) and email:
+            _fill_login_password_if_present(driver, email, timeout=8)
+            continue
+        if _is_mfa_challenge_page(driver) and email:
+            _fill_mfa_challenge_if_present(driver, email, timeout=10)
+            continue
         clicked = False
         for selectors in [
             ["//button[contains(., 'Allow')]", "//button[contains(., 'Authorize')]", "//button[contains(., 'Continue')]"],
@@ -1409,10 +1544,45 @@ def _run_roxy_codex_oauth_once(
         otp_provider = wait_for_otp
 
     client = None if reuse_existing_profile else RoxyBrowserClient()
-    opened = existing_opened if reuse_existing_profile else client.open_profile()
+    opened = None
+    if reuse_existing_profile:
+        opened = existing_opened
+    elif email and client:
+        # 补跑 Codex：优先复用账号已有 Roxy 环境；若不存在或失效则创建新环境
+        try:
+            acc = db.get_account_by_email(email)
+            acc_id = int((acc or {}).get("id") or 0) if acc else None
+            saved_profile_id = db.get_account_roxy_profile_id(acc_id, email) if (acc_id and email) else ""
+            if saved_profile_id:
+                logger.info("[Codex][Browser] 优先复用账号已有 Roxy 环境：%s (email=%s)", saved_profile_id, email)
+                try:
+                    opened = client.open_profile(saved_profile_id, reuse=True, proxy=proxy)
+                except (RoxyProfileMissingError, RoxyProfileReuseUnavailableError) as exc:
+                    logger.info("[Codex][Browser] 无法复用已有环境（%s），创建新的账号独占环境", exc)
+                    opened = None
+                except Exception as exc:
+                    logger.warning("[Codex][Browser] 复用环境遇到异常（%s），退回创建新环境", exc)
+                    opened = None
+        except Exception as exc:
+            logger.debug("[Codex][Browser] 查询账号绑定环境异常: %s", exc)
+            opened = None
+
+    if opened is None:
+        opened = existing_opened if reuse_existing_profile else client.open_profile(fresh=True, proxy=proxy)
+
     browser_kind_token = _CODEX_BROWSER_KIND.set(_detect_browser_kind(opened))
     driver = existing_driver if reuse_existing_profile else None
     owns_driver = not reuse_existing_profile
+    codex_succeeded = False
+
+    def _maybe_bind_account_profile():
+        if owns_driver and opened and opened.created_by_run and email:
+            try:
+                acc = db.get_account_by_email(email)
+                if acc and acc.get("id"):
+                    db.bind_account_roxy_profile(int(acc["id"]), email, opened.profile_id)
+            except Exception as b_exc:
+                logger.debug("[Codex][Browser] 绑定账号 Roxy 环境失败: %s", b_exc)
     try:
         auth_source = proto._codex_auth_url_source()
         code_verifier = None
@@ -1447,7 +1617,7 @@ def _run_roxy_codex_oauth_once(
         logger.info("[Codex][Browser] 检查是否需要手机号验证")
         _do_phone_verification_if_present(driver)
         logger.info("[Codex][Browser] 手机验证处理完成/无需处理，等待授权确认和 callback")
-        callback_url = _finish_consent_workspace(driver)
+        callback_url = _finish_consent_workspace(driver, email=email)
         code = proto._extract_code(callback_url, state)
         logger.info("[Codex][Browser] 已捕获 callback code：%s...", code[:24])
 
@@ -1461,6 +1631,8 @@ def _run_roxy_codex_oauth_once(
                 submit_payload=submit_payload,
             )
             msg = submit_payload.get("message") or submit_payload.get("status_message") or "CPA callback submitted"
+            codex_succeeded = True
+            _maybe_bind_account_profile()
             return proto._codex_result(
                 status="success",
                 ok=True,
@@ -1484,6 +1656,8 @@ def _run_roxy_codex_oauth_once(
                 submit_payload=submit_payload,
             )
             msg = submit_payload.get("message") or submit_payload.get("status_message") or "sub2 callback uploaded"
+            codex_succeeded = True
+            _maybe_bind_account_profile()
             return proto._codex_result(
                 status="success",
                 ok=True,
@@ -1501,6 +1675,8 @@ def _run_roxy_codex_oauth_once(
         effective_email = id_claims.get("email") or email
         storage = proto.build_codex_storage(token_resp, id_claims)
         path = proto.save_codex_credential(storage, effective_email, id_claims.get("plan_type", ""))
+        codex_succeeded = True
+        _maybe_bind_account_profile()
         return proto._codex_result(
             status="success",
             ok=True,
@@ -1529,7 +1705,7 @@ def _run_roxy_codex_oauth_once(
             except Exception:
                 pass
         if owns_driver and client and not bool(_roxy_cfg.ROXY_KEEP_BROWSER_OPEN):
-            client.cleanup_profile(opened)
+            client.cleanup_profile(opened, retain=codex_succeeded)
         try:
             _CODEX_BROWSER_KIND.reset(browser_kind_token)
         except Exception:

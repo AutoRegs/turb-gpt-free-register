@@ -76,6 +76,22 @@ class ProxyChainTrafficTests(unittest.TestCase):
             self.assertEqual(relay.traffic_snapshot()["destinations"][0]["port"], 80)
         finally:
             browser.close()
+    def test_blocks_google_and_googleapis_plain_and_connect(self):
+        relay = ProxyChainRelay("http://127.0.0.1:8888", blocked_hosts=("google.com", "googleapis.com", "statsigapi.net"))
+        for target, port, req in [
+            ("www.google.com", 80, b"GET http://www.google.com/ HTTP/1.1\r\nHost: www.google.com\r\n\r\n"),
+            ("update.googleapis.com", 443, b"CONNECT update.googleapis.com:443 HTTP/1.1\r\nHost: update.googleapis.com\r\n\r\n"),
+            ("statsigapi.net", 443, b"CONNECT statsigapi.net:443 HTTP/1.1\r\nHost: statsigapi.net\r\n\r\n"),
+        ]:
+            browser, client = socket.socketpair()
+            try:
+                browser.sendall(req)
+                with patch.object(relay, "_connect_target_through_upstream") as connect:
+                    relay._handle_client(client)
+                    connect.assert_not_called()
+                self.assertIn(b"403 Forbidden", browser.recv(4096))
+            finally:
+                browser.close()
 
     def test_unrelated_hosts_are_not_blocked_by_substring(self):
         relay = ProxyChainRelay("http://127.0.0.1:8888", blocked_hosts=("dl.google.com", "gvt1.com"))
@@ -245,7 +261,19 @@ class ProxyChainTrafficTests(unittest.TestCase):
         self.assertIn("target=[2001:db8::1]:443", lines[-1])
         self.assertEqual(len(result["proxy_transport"]["destinations"]), 3)
         self.assertEqual(result["total_bytes"], 1010)
+        self.assertEqual(result["total_bytes"], 1010)
 
+    def test_merge_preserves_browser_observed_bytes_when_transport_is_zero(self):
+        relay = ProxyChainRelay("http://127.0.0.1:8888")
+        # transport snapshot reports 0 bytes
+        snapshot = relay.traffic_snapshot()
+        self.assertEqual(snapshot["total_bytes"], 0)
+        observed = {"upload_bytes": 1000, "download_bytes": 50000, "total_bytes": 51000}
+        result = merge_proxy_transport_traffic(observed, snapshot, label="Roxy")
+        self.assertEqual(result["total_bytes"], 51000)
+        self.assertEqual(result["upload_bytes"], 1000)
+        self.assertEqual(result["download_bytes"], 50000)
+        self.assertEqual(result["measurement_scope"], "browser_observed_traffic")
     def test_destination_validation_rejects_credentials_and_log_injection(self):
         self.assertEqual(ProxyChainRelay._destination_key("Example.COM.", 443), ("example.com", 443))
         for host in ("user:secret@example.com", "example.com\nforged", "example.com/path", ""):

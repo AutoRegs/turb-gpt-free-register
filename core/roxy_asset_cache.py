@@ -140,7 +140,12 @@ class RoxyLocalAssetCache:
         path = parsed.path.lower()
         if any(part in path for part in _DENIED_PATH_PARTS):
             return False
-        rtype = str(resource_type or "")
+        rtype = str(resource_type or "").capitalize()
+        is_static_json = path.endswith(".json") and (
+            "/cdn/assets/" in path or "/_next/static/" in path or "/assets/" in path
+        )
+        if is_static_json:
+            return True
         if rtype and rtype not in _ALLOWED_RESOURCE_TYPES:
             return False
         suffix = Path(path).suffix.lower()
@@ -148,6 +153,7 @@ class RoxyLocalAssetCache:
             suffix in _STATIC_EXTENSIONS
             or "/_next/static/" in path
             or "/assets/" in path
+            or "/cdn/assets/" in path
         )
 
     def _entry_path(self, url: str) -> Path:
@@ -265,10 +271,13 @@ class RoxyLocalAssetCache:
                 "maxResourceBufferSize": self.max_item_bytes,
             })
             if self.mode in {"replay", "auto"}:
-                self._send("Fetch.enable", {"patterns": [
+                patterns = [
                     {"urlPattern": "*", "resourceType": kind, "requestStage": "Request"}
                     for kind in sorted(_ALLOWED_RESOURCE_TYPES)
-                ]})
+                ]
+                patterns.append({"urlPattern": "*/cdn/assets/*.json*", "requestStage": "Request"})
+                patterns.append({"urlPattern": "*/_next/static/*.json*", "requestStage": "Request"})
+                self._send("Fetch.enable", {"patterns": patterns})
             self._ready.set()
             logger.info("[%s][本地缓存] 已启用 mode=%s dir=%s", self.label, self.mode, self.cache_dir)
 

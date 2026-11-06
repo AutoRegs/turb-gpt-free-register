@@ -33,11 +33,26 @@ def merge_proxy_transport_traffic(observed: dict | None, transport: dict | None,
     result["proxy_transport"] = dict(transport)
     upload = _non_negative_int(transport.get("upload_bytes"))
     download = _non_negative_int(transport.get("download_bytes"))
-    result.update(available=True, upload_bytes=upload, download_bytes=download,
-                  total_bytes=upload + download, measurement_scope="proxy_transport_all_browser_targets",
-                  method="local_proxy.transport", label=label,
-                  note="本地代理隧道双向传输字节，包含 TLS、启动阶段和后台请求；不含 TCP/IP 开销、重传或代理商计费差异")
-    browser_total = result["browser_observed_total_bytes"]
+    transport_total = upload + download
+    browser_total = result.get("browser_observed_total_bytes", 0)
+    if transport_total > 0:
+        result.update(available=True, upload_bytes=upload, download_bytes=download,
+                      total_bytes=transport_total, measurement_scope="proxy_transport_all_browser_targets",
+                      method="local_proxy.transport", label=label,
+                      note="本地代理隧道双向传输字节，包含 TLS、启动阶段和后台请求；不含 TCP/IP 开销、重传或代理商计费差异")
+    elif browser_total > 0:
+        result.update(available=True,
+                      upload_bytes=result.get("browser_observed_upload_bytes", 0),
+                      download_bytes=result.get("browser_observed_download_bytes", 0),
+                      total_bytes=browser_total,
+                      measurement_scope="browser_observed_traffic",
+                      method="selenium.chrome.performance_log" if "selenium" in str(result.get("method", "")) else "browser_observed",
+                      label=label)
+    else:
+        result.update(available=True, upload_bytes=0, download_bytes=0,
+                      total_bytes=0, measurement_scope="proxy_transport_all_browser_targets",
+                      method="local_proxy.transport", label=label,
+                      note="本地代理隧道双向传输字节，包含 TLS、启动阶段和后台请求；不含 TCP/IP 开销、重传或代理商计费差异")
     logger.info("[%s] 代理传输流量：上传 %.2f MiB，下载 %.2f MiB，总计 %.2f MiB；页面可见 %.2f MiB",
                 label, upload / 1048576, download / 1048576, (upload + download) / 1048576, browser_total / 1048576)
     destinations = transport.get("destinations") or []

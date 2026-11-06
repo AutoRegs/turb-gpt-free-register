@@ -117,6 +117,49 @@ class AccountPlanFilterTests(unittest.TestCase):
                 no_trial_snapshot = db.list_account_plan_check_statuses(limit=20, plan_filter="free_no_trial")
                 self.assertEqual([item["id"] for item in no_trial_snapshot["items"]], [2])
 
+    def test_live_and_plan_failed_status_filters(self):
+        with sqlite3.connect(":memory:") as conn:
+            conn.execute("CREATE TABLE accounts (payload TEXT)")
+            accounts = [
+                {"id": 1, "email": "a1@t.com", "live_check_status": "failed", "plan_check_status": "success"},
+                {"id": 2, "email": "a2@t.com", "live_check_status": "live", "plan_check_status": "failed"},
+                {"id": 3, "email": "a3@t.com", "live_check_status": "live", "plan_check_status": "success"},
+            ]
+            for acc in accounts:
+                conn.execute("INSERT INTO accounts VALUES (?)", (json.dumps(acc),))
+            where_live, params_live = db._account_filter_sql(codex_filter="live_failed")
+            live_failed_count = conn.execute("SELECT COUNT(*) FROM accounts WHERE " + " AND ".join(where_live), params_live).fetchone()[0]
+            self.assertEqual(live_failed_count, 1)
+            self.assertTrue(db._matches_codex_status_filter(accounts[0], "live_failed"))
+            self.assertFalse(db._matches_codex_status_filter(accounts[1], "live_failed"))
+
+            where_plan, params_plan = db._account_filter_sql(codex_filter="plan_failed")
+            plan_failed_count = conn.execute("SELECT COUNT(*) FROM accounts WHERE " + " AND ".join(where_plan), params_plan).fetchone()[0]
+            self.assertEqual(plan_failed_count, 1)
+            self.assertTrue(db._matches_codex_status_filter(accounts[1], "plan_failed"))
+            self.assertFalse(db._matches_codex_status_filter(accounts[0], "plan_failed"))
+
+    def test_search_imported_accounts_with_chinese_keyword(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            accounts_path = root / "accounts.json"
+            accounts_path.write_text(json.dumps([
+                {"id": 1, "email": "imp@example.com", "email_source": "import"},
+                {"id": 2, "email": "reg@example.com", "email_source": "outlook"},
+            ], ensure_ascii=False), encoding="utf-8")
+            missing = root / "missing.json"
+            with patch.multiple(
+                db,
+                _ACCOUNTS_JSON=accounts_path,
+                _LEGACY_ACCOUNTS_JSON=missing,
+                _OUTLOOK_JSON=missing,
+                _GENERIC_API_EMAIL_JSON=missing,
+                _JOBS_JSON=missing,
+                _DOMAIN_EMAIL_JSON=missing,
+            ), patch.object(db, "_SQLITE_READY", False), patch.object(db, "_SQLITE_READY_PATH", None):
+                res = db.list_accounts_page(limit=10, q="导入")
+                self.assertEqual(len(res["items"]), 1)
+                self.assertEqual(res["items"][0]["email"], "imp@example.com")
 
 if __name__ == "__main__":
     unittest.main()

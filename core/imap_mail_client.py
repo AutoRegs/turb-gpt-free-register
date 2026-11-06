@@ -63,7 +63,16 @@ def get_account_context(email: str) -> ImapEmailAccount | None:
     if cached:
         return cached
     from core import db
-    account = _account_from_row(db.get_imap_email_by_email(email))
+    row = db.get_imap_email_by_email(email)
+    if row is None:
+        from core.email_provider import get_base_email
+        base_email = get_base_email(email)
+        if base_email != email:
+            cached_base = _CONTEXT_CACHE.get(base_email.lower())
+            if cached_base:
+                return cached_base
+            row = db.get_imap_email_by_email(base_email)
+    account = _account_from_row(row)
     if account:
         _CONTEXT_CACHE[key] = account
     return account
@@ -75,7 +84,10 @@ def release_account(email: str, status: str = "available", note: str | None = No
     # 已注册账号后续查活仍需取码，因此只在真正回收为可用时清掉缓存。
     if status == "available":
         _CONTEXT_CACHE.pop(str(email or "").lower(), None)
-
+        from core.email_provider import get_base_email
+        base_email = get_base_email(email)
+        if base_email != email:
+            _CONTEXT_CACHE.pop(base_email.lower(), None)
 
 def _operation_timeout(deadline: float | None = None) -> float:
     timeout = max(0.1, float(getattr(_email_cfg, "IMAP_SOCKET_TIMEOUT", 10)))

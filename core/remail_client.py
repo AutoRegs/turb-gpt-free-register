@@ -252,7 +252,10 @@ def _context_from_order(order: dict, target_email: str) -> RemailAccount | None:
     if not credentials:
         return None
     email, service_token, order_no = credentials
-    if email.casefold() != str(target_email or "").strip().casefold():
+    from core.email_provider import get_base_email
+    base_target = get_base_email(target_email)
+    target_clean = str(target_email or "").strip().casefold()
+    if email.casefold() not in (target_clean, base_target.casefold()):
         return None
 
     raw_project_id = _first_value(order, "projectId", "project_id")
@@ -305,6 +308,11 @@ def _saved_context_metadata(email: str) -> dict:
         from core import db
 
         row = db.get_account_by_email(email)
+        if not row:
+            from core.email_provider import get_base_email
+            base = get_base_email(email)
+            if base != email:
+                row = db.get_account_by_email(base)
     except Exception as exc:
         logger.debug("[Remail] 读取已注册账号订单信息失败: %s: %s", type(exc).__name__, exc)
         return {}
@@ -340,7 +348,7 @@ def get_account_context_metadata(email: str) -> dict | None:
     service token 是取件凭证，不写日志；这里仅由账号持久化层调用，普通列表
     API 不会直接返回 ``extra_json``。
     """
-    account = get_account_context(email)
+    account = get_account_context(email) or restore_account_context(email)
     if account is None:
         return None
     return {
@@ -369,13 +377,15 @@ def restore_account_context(email: str) -> RemailAccount | None:
 
     metadata = _saved_context_metadata(target)
     saved_email = str(metadata.get("email") or "").strip()
-    if saved_email and saved_email.casefold() != target.casefold():
+    from core.email_provider import get_base_email
+    base_target = get_base_email(target)
+    if saved_email and saved_email.casefold() not in (target.casefold(), base_target.casefold()):
         metadata = {}
 
     saved_token = str(metadata.get("service_token") or metadata.get("serviceToken") or "").strip()
     if saved_token:
         order = {
-            "deliveryEmail": saved_email or target,
+            "deliveryEmail": saved_email or base_target or target,
             "serviceToken": saved_token,
             "orderNo": str(metadata.get("order_no") or metadata.get("orderNo") or "").strip(),
             "projectId": metadata.get("project_id") or metadata.get("projectId"),
@@ -550,13 +560,23 @@ def get_email() -> str:
 
 def get_account_context(email: str) -> RemailAccount | None:
     with _CONTEXT_LOCK:
-        return _CONTEXT_CACHE.get(_cache_key(email))
+        ctx = _CONTEXT_CACHE.get(_cache_key(email))
+        if ctx is None:
+            from core.email_provider import get_base_email
+            base_email = get_base_email(email)
+            if base_email != email:
+                ctx = _CONTEXT_CACHE.get(_cache_key(base_email))
+        return ctx
 
 
 def release_account(email: str, status: str = "available", note: str | None = None) -> None:
     """释放本地取件上下文；订单生命周期由 Remail 服务端管理。"""
     with _CONTEXT_LOCK:
         account = _CONTEXT_CACHE.pop(_cache_key(email), None)
+        from core.email_provider import get_base_email
+        base_email = get_base_email(email)
+        if base_email != email:
+            _CONTEXT_CACHE.pop(_cache_key(base_email), None)
     if account:
         logger.info(
             "[Remail] 已释放取件上下文: %s order=%s status=%s note=%s",
@@ -670,7 +690,7 @@ def fetch_latest_otp(
             payload = _request(
                 "GET",
                 "/v1/pickup",
-                params={"email": target, "token": account.service_token},
+                params={"email": account.email if (account and account.email) else get_base_email(target), "token": account.service_token},
                 authenticated=False,
             )
             items = _pickup_items(payload)

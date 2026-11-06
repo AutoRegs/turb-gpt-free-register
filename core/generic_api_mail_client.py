@@ -685,6 +685,13 @@ def get_account_context(email: str) -> GenericApiEmailAccount | None:
     from core.db import get_generic_api_email_by_email
     row = get_generic_api_email_by_email(email)
     if row is None:
+        from core.email_provider import get_base_email
+        base_email = get_base_email(email)
+        if base_email != email:
+            if base_email in _CONTEXT_CACHE:
+                return _CONTEXT_CACHE[base_email]
+            row = get_generic_api_email_by_email(base_email)
+    if row is None:
         return None
     account = GenericApiEmailAccount(email=row["email"], code_url=row["code_url"])
     _CONTEXT_CACHE[email] = account
@@ -695,6 +702,10 @@ def release_account(email: str, status: str = "available", note: str | None = No
     from core.db import release_generic_api_email
     release_generic_api_email(email, status=status, note=note)
     _CONTEXT_CACHE.pop(email, None)
+    from core.email_provider import get_base_email
+    base_email = get_base_email(email)
+    if base_email != email:
+        _CONTEXT_CACHE.pop(base_email, None)
 
 
 def _fetch_poll_payload(

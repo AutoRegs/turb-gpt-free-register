@@ -18,11 +18,84 @@ EMAIL_SOURCE 支持单个或多个来源：
     ["outlook", "generic_api", "mailnest", "cloudmail", "remail", "xigua"]  # 也兼容列表写法
 """
 import logging
+import random
+import string
 from typing import Iterable
 
 logger = logging.getLogger(__name__)
 
 _VALID_SOURCES = ("outlook", "generic_api", "imap", "cloudflare_domain", "cloudflare", "gptmail", "mailnest", "cloudmail", "remail", "xigua", "mailcode")
+
+
+def is_icloud_email(email: str | None) -> bool:
+    """判断是否为 icloud.com 邮箱。"""
+    raw = str(email or "").strip().lower()
+    return raw.endswith("@icloud.com")
+
+
+def parse_email_alias(email: str | None) -> tuple[str, str | None, str]:
+    """解析邮箱别名。
+
+    返回 (local_part, alias, domain)。
+    例如:
+        'xxx@icloud.com' -> ('xxx', None, 'icloud.com')
+        'xxx+abc@icloud.com' -> ('xxx', 'abc', 'icloud.com')
+    """
+    raw = str(email or "").strip().lower()
+    if "@" not in raw:
+        return raw, None, ""
+    local_part, domain = raw.split("@", 1)
+    if "+" in local_part:
+        base_local, alias = local_part.split("+", 1)
+        return base_local, alias, domain
+    return local_part, None, domain
+
+
+def has_email_alias(email: str | None) -> bool:
+    """判断邮箱本地部分是否已包含 '+' 别名。"""
+    _, alias, _ = parse_email_alias(email)
+    return alias is not None
+
+
+def get_base_email(email: str | None) -> str:
+    """提取基础邮箱（剥离 '+' 后的别名）。
+
+    例如 'xxx+abc123@icloud.com' -> 'xxx@icloud.com'。
+    """
+    raw = str(email or "").strip().lower()
+    if not raw or "@" not in raw:
+        return raw
+    base_local, alias, domain = parse_email_alias(raw)
+    if alias:
+        return f"{base_local}@{domain}"
+    return raw
+
+
+def generate_random_alias(length: int = 6) -> str:
+    """生成指定长度（默认 6 位）小写字母+数字的随机别名。"""
+    chars = string.ascii_lowercase + string.digits
+    return "".join(random.choices(chars, k=length))
+
+
+def generate_icloud_alias_email(email: str, alias: str | None = None) -> str:
+    """为 icloud.com 邮箱生成带别名的邮箱地址。
+
+    例如: 'xxx@icloud.com' -> 'xxx+a1b2c3@icloud.com'。
+    """
+    base_local, _, domain = parse_email_alias(email)
+    if not domain:
+        domain = "icloud.com"
+    chosen_alias = alias or generate_random_alias(6)
+    return f"{base_local}+{chosen_alias}@{domain}"
+
+
+def is_icloud_alias_enabled() -> bool:
+    """读取 ENABLE_ICLOUD_EMAIL_ALIAS 配置开关。"""
+    try:
+        from config import email as _email_cfg
+        return bool(getattr(_email_cfg, "ENABLE_ICLOUD_EMAIL_ALIAS", False))
+    except Exception:
+        return False
 
 
 def parse_email_sources(value=None) -> list[str]:
@@ -140,6 +213,11 @@ def resolve_email_source(email: str) -> str:
     registered_source = _registered_email_source(email)
     if registered_source:
         return registered_source
+    base_email = get_base_email(email)
+    if base_email != email:
+        registered_source = _registered_email_source(base_email)
+        if registered_source:
+            return registered_source
 
     from core.gptmail_client import get_account_context as get_gptmail_context
     if get_gptmail_context(email):
@@ -154,7 +232,7 @@ def resolve_email_source(email: str) -> str:
     if get_cloudmail_context(email):
         return "cloudmail"
     from core.remail_client import get_account_context as get_remail_context
-    if get_remail_context(email):
+    if get_remail_context(email) or (base_email != email and get_remail_context(base_email)):
         return "remail"
     from core.mailcode_client import get_account_context as get_mailcode_context
     if get_mailcode_context(email):
@@ -164,11 +242,11 @@ def resolve_email_source(email: str) -> str:
         return "xigua"
 
     from core import db
-    if db.get_imap_email_by_email(email):
+    if db.get_imap_email_by_email(email) or (base_email != email and db.get_imap_email_by_email(base_email)):
         return "imap"
-    if db.get_generic_api_email_by_email(email):
+    if db.get_generic_api_email_by_email(email) or (base_email != email and db.get_generic_api_email_by_email(base_email)):
         return "generic_api"
-    if db.get_outlook_by_email(email):
+    if db.get_outlook_by_email(email) or (base_email != email and db.get_outlook_by_email(base_email)):
         return "outlook"
     if db._find_domain_email(db._load_domain_pool(), email):  # 内部轻量查询，仅本项目使用
         return "cloudflare_domain"

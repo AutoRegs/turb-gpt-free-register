@@ -80,9 +80,12 @@ ROXY_CREATE_INTERVAL: float = 1.5
 # 环境生命周期：
 #   True  = 一号一环境：每个账号强制创建新 Profile，用完关闭并删除，不允许复用 ROXY_PROFILE_ID
 #   False = 可复用 ROXY_PROFILE_ID 或只关闭不删除
+# 查活例外：优先复用当前账号保存的 Profile；无可用环境时新建并绑定，结束只关闭不删除。
 ROXY_ONE_PROFILE_PER_ACCOUNT: bool = True
 
-# 一号一环境结束后是否删除 Profile。建议保持 True。
+# 一号一环境模式下任务结束后是否删除临时 Profile：
+# 开启（True）：注册/导入成功与失败均删除临时环境；
+# 关闭（False）：注册/导入成功账号保留环境并关闭，注册/导入失败账号依然自动删除环境以防堆积。
 ROXY_DELETE_PROFILE_AFTER_RUN: bool = True
 
 # 删除环境接口路径/方法；如你的 Roxy 版本不同，只改这里。
@@ -93,6 +96,10 @@ ROXY_DELETE_METHOD: str = "POST"
 # 避免固定 macOS 指纹。
 ROXY_RANDOM_OS_ON_CREATE: bool = True
 ROXY_RANDOM_OS_CHOICES: str = "Windows,macOS"
+
+# 创建 Roxy 环境时随机内核版本；开启后从 ROXY_CORE_VERSION_POOL 随机挑选一个内核版本及对应 chromedriver，降低指纹同质化
+ROXY_RANDOM_CORE_VERSION: bool = True
+ROXY_CORE_VERSION_POOL: str = "143,149,150,151,152,153,154"
 
 # 创建 Roxy 环境时随机名称；开启后会覆盖 ROXY_PROFILE_CREATE_PAYLOAD 里的固定 name。
 ROXY_RANDOM_PROFILE_NAME_ON_CREATE: bool = True
@@ -123,5 +130,8 @@ ROXY_PROFILE_CREATE_PAYLOAD: dict = {
 # Roxy Codex 授权等待 callback 的最长秒数
 ROXY_CODEX_CALLBACK_TIMEOUT: int = 180
 
+# 协议查活连续失败达到该次数后，自动切换为当前配置的注册驱动方式（Roxy/Cloak 等指纹浏览器）进行查活
+LIVE_CHECK_PROTOCOL_FAILURE_LIMIT: int = 4
+
 # ---- .env overrides for WebUI editable fields ----
-apply_env_overrides(globals(), {'REGISTRATION_DRIVER': 'str', 'ROXY_API_BASE': 'str', 'ROXY_API_TOKEN': 'str', 'ROXY_PROFILE_ID': 'str', 'ROXY_WORKSPACE_ID': 'str', 'ROXY_PROJECT_ID': 'str', 'ROXY_WORKSPACE_LIST_PATH': 'str', 'ROXY_OPEN_PATH': 'str', 'ROXY_OPEN_HEADLESS': 'bool', 'ROXY_CLOSE_PATH': 'str', 'ROXY_KEEP_BROWSER_OPEN': 'bool', 'ROXY_API_RETRIES': 'int', 'ROXY_API_RETRY_DELAY': 'int', 'ROXY_CREATE_RETRIES': 'int', 'ROXY_CREATE_RETRY_DELAY': 'int', 'ROXY_LOCAL_ASSET_CACHE_ENABLED': 'bool', 'ROXY_LOCAL_ASSET_CACHE_MODE': 'str', 'ROXY_LOCAL_ASSET_CACHE_DIR': 'str', 'ROXY_LOCAL_ASSET_CACHE_MAX_AGE': 'int', 'ROXY_LOCAL_ASSET_CACHE_MAX_ITEM_BYTES': 'int', 'ROXY_ONE_PROFILE_PER_ACCOUNT': 'bool', 'ROXY_DELETE_PROFILE_AFTER_RUN': 'bool', 'ROXY_RANDOM_OS_ON_CREATE': 'bool', 'ROXY_RANDOM_OS_CHOICES': 'str', 'ROXY_RANDOM_PROFILE_NAME_ON_CREATE': 'bool', 'ROXY_PROFILE_NAME_PREFIX': 'str', 'ROXY_CREATE_USE_PROXY_POOL': 'bool', 'ROXY_PROXY_CHECK_CHANNEL': 'str', 'ROXY_DELETE_PATH': 'str', 'ROXY_CODEX_CALLBACK_TIMEOUT': 'int', 'ROXY_CREATE_INTERVAL': 'float'})
+apply_env_overrides(globals(), {'REGISTRATION_DRIVER': 'str', 'ROXY_API_BASE': 'str', 'ROXY_API_TOKEN': 'str', 'ROXY_PROFILE_ID': 'str', 'ROXY_WORKSPACE_ID': 'str', 'ROXY_PROJECT_ID': 'str', 'ROXY_WORKSPACE_LIST_PATH': 'str', 'ROXY_OPEN_PATH': 'str', 'ROXY_OPEN_HEADLESS': 'bool', 'ROXY_CLOSE_PATH': 'str', 'ROXY_KEEP_BROWSER_OPEN': 'bool', 'ROXY_API_RETRIES': 'int', 'ROXY_API_RETRY_DELAY': 'int', 'ROXY_CREATE_RETRIES': 'int', 'ROXY_CREATE_RETRY_DELAY': 'int', 'ROXY_LOCAL_ASSET_CACHE_ENABLED': 'bool', 'ROXY_LOCAL_ASSET_CACHE_MODE': 'str', 'ROXY_LOCAL_ASSET_CACHE_DIR': 'str', 'ROXY_LOCAL_ASSET_CACHE_MAX_AGE': 'int', 'ROXY_LOCAL_ASSET_CACHE_MAX_ITEM_BYTES': 'int', 'ROXY_ONE_PROFILE_PER_ACCOUNT': 'bool', 'ROXY_DELETE_PROFILE_AFTER_RUN': 'bool', 'ROXY_RANDOM_OS_ON_CREATE': 'bool', 'ROXY_RANDOM_OS_CHOICES': 'str', 'ROXY_RANDOM_CORE_VERSION': 'bool', 'ROXY_CORE_VERSION_POOL': 'str', 'ROXY_RANDOM_PROFILE_NAME_ON_CREATE': 'bool', 'ROXY_PROFILE_NAME_PREFIX': 'str', 'ROXY_CREATE_USE_PROXY_POOL': 'bool', 'ROXY_PROXY_CHECK_CHANNEL': 'str', 'ROXY_DELETE_PATH': 'str', 'ROXY_CODEX_CALLBACK_TIMEOUT': 'int', 'ROXY_CREATE_INTERVAL': 'float', 'LIVE_CHECK_PROTOCOL_FAILURE_LIMIT': 'int'})

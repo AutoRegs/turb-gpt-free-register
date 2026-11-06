@@ -27,7 +27,13 @@ PID_FILE="$RUN_DIR/webui.pid"
 LOG_FILE="$LOG_DIR/webui.log"
 
 HOST="${HOST:-127.0.0.1}"
-PORT="${PORT:-5000}"
+if [ -f "$ROOT_DIR/.env" ]; then
+  ENV_PORT=$(grep -E '^[[:space:]]*PORT[[:space:]]*=' "$ROOT_DIR/.env" | tail -n 1 | cut -d '=' -f 2- | tr -d ' "\r\n'\''')
+  if [ -n "$ENV_PORT" ]; then
+    PORT="${PORT:-$ENV_PORT}"
+  fi
+fi
+PORT="${PORT:-8000}"
 OPEN_BROWSER="${OPEN_BROWSER:-0}"
 VERBOSE="${VERBOSE:-0}"
 AUTH_CODE="${AUTH_CODE:-}"

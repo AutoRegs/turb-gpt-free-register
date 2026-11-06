@@ -34,6 +34,8 @@ def run_cloak_registration(
     otp_code: str = None,
     batch_dir: Path | None = None,
     on_email_acquired: Callable[[str], None] | None = None,
+    on_password_set: Callable[[str], None] | None = None,
+    inherited_password: str | None = None,
 ) -> dict:
     """CloakBrowser 自动化注册入口。"""
     driver = None
@@ -81,7 +83,13 @@ def run_cloak_registration(
 
         # 如果邮箱提交后直接进入验证码页，也尝试点击“使用密码继续”进入密码创建页；
         # _fill_password_page_if_present 会在设置成功后返回本次 OpenAI 注册密码。
-        openai_password = _fill_password_page_if_present(driver, email, timeout=25)
+        openai_password = _fill_password_page_if_present(
+            driver,
+            email,
+            timeout=25,
+            on_password_set=on_password_set,
+            inherited_password=inherited_password,
+        )
         _check_manual_stop()
 
         current_otp = otp_code
@@ -169,6 +177,12 @@ def run_cloak_registration(
         network_traffic = merge_proxy_transport_traffic(network_traffic, driver.proxy_transport_snapshot(), label="Cloak")
         if data_saver is not None:
             data_saver.stop()
+        final_password = openai_password or inherited_password or None
+        if on_password_set is not None and final_password:
+            try:
+                on_password_set(final_password)
+            except Exception:
+                pass
         account_id = save_account_data(
             email=email,
             access_token=access_token,
@@ -181,7 +195,7 @@ def run_cloak_registration(
                 "account": session_info.get("account"),
                 "expires": session_info.get("expires"),
                 "cloakbrowser": {"profile_id": opened.profile_id, "open_result": opened.raw},
-                "registration_password": openai_password,
+                "registration_password": final_password,
                 "codex": codex_result,
                 "network_traffic": network_traffic,
             },

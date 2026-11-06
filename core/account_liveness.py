@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""已注册账号查活：优先复用已有 AT 预热后走 reauth OTP，成功刷新 AT 即视为正常。"""
+"""已注册账号登录：执行指定驱动的完整登录，成功刷新 AT 即视为正常。"""
 import logging
 import json
 import threading
@@ -54,6 +54,19 @@ _SESSION_FINGERPRINT_KEYS = {
     "react_container_key",
     "react_resources_key",
 }
+
+
+class EmailOtpRequiredError(RuntimeError):
+    """登录需要邮箱验证码，但导入任务没有可安全使用的邮箱取码配置。"""
+
+
+def _totp_code_from_secret(secret: str | None) -> str:
+    secret = str(secret or "").strip()
+    if not secret:
+        return ""
+    import pyotp
+
+    return pyotp.TOTP(secret).now()
 
 
 def _is_retryable_network_error(exc: BaseException) -> bool:
@@ -115,7 +128,9 @@ def _new_fingerprint_pinned_session(
 def _fingerprint_mode_label(state: dict) -> str:
     mode = str(state.get("fingerprint_mode") or "")
     if mode == "registration_email_stable":
-        return "同邮箱复用协议注册指纹"
+        return "按当前邮箱派生稳定协议指纹（不读取其他账号指纹）"
+    if state.get("purpose") == "import":
+        return "本次导入新建随机指纹（不复用注册指纹）"
     return "每次查活重新创建"
 
 
@@ -498,8 +513,11 @@ def _login_via_email_otp(
     email: str,
     otp_after_ts: float,
     email_source: str | None = None,
+    allow_email_otp: bool = True,
 ) -> dict:
     """完成邮箱 OTP 登录，并跟随 OAuth callback 后拉取 ChatGPT session。"""
+    if not allow_email_otp:
+        raise EmailOtpRequiredError("密码登录后仍需要邮箱验证码")
     validate_result = _validate_with_retry(
         session,
         email,
@@ -523,9 +541,12 @@ def _login_via_password_or_otp(
     email: str,
     otp_after_ts: float,
     email_source: str | None = None,
+    password: str | None = None,
+    totp_secret: str | None = None,
+    allow_email_otp: bool = True,
 ) -> dict:
     """优先密码登录；如进入 MFA challenge 则自动用 TOTP 完成。"""
-    password = _account_registration_password(email)
+    password = str(password if password is not None else _account_registration_password(email) or "").strip()
     if not password:
         logger.info("[查活] 未找到注册密码，继续使用邮箱 OTP：%s", email)
         return _login_via_email_otp(
@@ -533,6 +554,7 @@ def _login_via_password_or_otp(
             email,
             otp_after_ts,
             email_source=email_source,
+            allow_email_otp=allow_email_otp,
         )
 
     logger.info("[查活] 账号存在密码，优先走密码登录：%s", email)
@@ -544,14 +566,14 @@ def _login_via_password_or_otp(
 
     if "/mfa-challenge/" in continue_url or page_type == "mfa_challenge":
         factor_id = _extract_factor_id(password_result, continue_url)
-        secret = _account_totp_secret(email)
+        secret = str(totp_secret if totp_secret is not None else _account_totp_secret(email) or "").strip()
         if not factor_id:
             raise RuntimeError(f"密码登录后进入 MFA 但未拿到 factor_id: {password_result}")
         if not secret:
             raise RuntimeError(f"密码登录后进入 MFA，但账号没有 totp_secret：{email}")
         logger.info("[查活] 已进入 MFA challenge，开始提交 TOTP：%s factor_id=%s", email, factor_id)
         _mfa_issue_challenge(session, factor_id)
-        code = _account_totp_code(email)
+        code = _totp_code_from_secret(secret) if totp_secret is not None else _account_totp_code(email)
         if not code:
             raise RuntimeError(f"无法生成 TOTP 验证码：{email}")
         mfa_result = _mfa_verify(session, factor_id, code)
@@ -571,6 +593,7 @@ def _login_via_password_or_otp(
             email,
             otp_after_ts,
             email_source=email_source,
+            allow_email_otp=allow_email_otp,
         )
 
     if continue_url:
@@ -586,6 +609,9 @@ def _login_via_full_web_flow(
     *,
     email_source: str | None,
     fingerprint_state: dict,
+    password: str | None = None,
+    totp_secret: str | None = None,
+    allow_email_otp: bool = True,
 ) -> tuple[BrowserSession, dict]:
     """按 plus 纯协议注册的 Web 登录序列建立一份全新登录态。"""
     session, authorize_url = _network_preflight_with_retry(
@@ -608,6 +634,9 @@ def _login_via_full_web_flow(
             email,
             otp_after_ts,
             email_source=email_source,
+            password=password,
+            totp_secret=totp_secret,
+            allow_email_otp=allow_email_otp,
         )
         return session, session_info
     except BaseException:
@@ -616,6 +645,86 @@ def _login_via_full_web_flow(
         except Exception:
             logger.warning("[查活] 登录失败后的会话清理异常", exc_info=True)
         raise
+
+
+def login_account_with_credentials(
+    email: str,
+    password: str,
+    totp_secret: str,
+    *,
+    proxy: str | None = None,
+) -> dict:
+    """使用调用方显式提供的凭据登录账号并刷新 access token。
+
+    该入口不读取数据库中的密码/2FA，也不把导入行临时写入数据库。
+    导入任务若遇到邮箱 OTP 会得到 ``needs_email_otp``，由上层展示人工处理。
+    """
+    email = str(email or "").strip()
+    password = str(password or "").strip()
+    totp_secret = str(totp_secret or "").strip()
+    if not email or not password or not totp_secret:
+        raise ValueError("email、password、totp_secret 均不能为空")
+    # 在发起网络请求前校验密钥，避免将格式错误的行提交到登录流程。
+    _totp_code_from_secret(totp_secret)
+    from config import roxybrowser as browser_cfg
+
+    driver = str(getattr(browser_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
+    logger.info("[账号导入] 登录方式：%s（跟随系统注册方式配置）", driver)
+    state: dict = {"force_fresh": True, "purpose": "import"}
+    session: BrowserSession | None = None
+    checked_at = _now()
+    try:
+        if driver != "protocol":
+            from core.account_browser_login import login_with_browser
+
+            return login_with_browser(email, password, totp_secret, proxy=proxy, driver_mode=driver)
+        session, session_info = _login_via_full_web_flow(
+            email,
+            proxy,
+            email_source=None,
+            fingerprint_state=state,
+            password=password,
+            totp_secret=totp_secret,
+            allow_email_otp=False,
+        )
+        access_token = str(session_info.get("accessToken") or "").strip()
+        if not access_token:
+            raise RuntimeError("重新登录后未拿到 accessToken")
+        return {
+            "ok": True,
+            "status": "live",
+            "checked_at": checked_at,
+            "access_token": access_token,
+            "session": session_info,
+            "proxy_used": session.proxy or None,
+            "fingerprint": _safe_fingerprint_for_account(session),
+            "fingerprint_text": _safe_fingerprint_text_for_account(session),
+        }
+    except EmailOtpRequiredError:
+        return {
+            "ok": False,
+            "status": "needs_email_otp",
+            "checked_at": checked_at,
+            "error": "登录需要邮箱验证码，请使用已配置邮箱来源的账号查活",
+        }
+    except AccountUnusableError as exc:
+        code = getattr(exc, "error_code", "") or "account_deactivated"
+        return {"ok": False, "status": "deactivated", "checked_at": checked_at, "error": code}
+    except Exception as exc:
+        detail = str(exc)[:500]
+        detail = detail.replace(password, "[已隐藏]").replace(totp_secret, "[已隐藏]")
+        return {
+            "ok": False,
+            "status": "failed",
+            "checked_at": checked_at,
+            "error": f"{type(exc).__name__}: {detail}",
+        }
+    finally:
+        if session is not None:
+            try:
+                close_browser_session(session)
+            except Exception:
+                pass
 
 
 def log_path(email: str) -> Path:
@@ -682,10 +791,13 @@ def check_account_liveness(
     clear_log: bool = True,
     email_source: str | None = None,
     fingerprint_state: dict | None = None,
+    driver_mode: str = "protocol",
+    account_id: int | None = None,
     on_authenticated: Callable[[dict, BrowserSession], dict] | None = None,
 ) -> dict:
     """
     重新登录账号并刷新最新 accessToken，关闭会话前在原会话查询套餐。
+    默认纯协议；失败切换由后台队列调度。
 
     返回：
       {
@@ -712,6 +824,7 @@ def check_account_liveness(
     fh: logging.FileHandler | None = None
     session: BrowserSession | None = None
     task_fingerprint_state = fingerprint_state if fingerprint_state is not None else {}
+    password = totp_secret = ""
     root_logger = logging.getLogger()
     thread_name = threading.current_thread().name
     with _RUNNING_LOCK:
@@ -728,6 +841,18 @@ def check_account_liveness(
 
         logger.info("[查活] 日志文件：%s", path)
         logger.info("[查活] 开始重新登录：%s", email)
+        driver = str(driver_mode or "protocol").strip().lower()
+        logger.info("[查活] 本次登录方式：%s", driver)
+        if driver != "protocol":
+            from core.account_browser_login import login_with_browser
+
+            password = _account_registration_password(email)
+            totp_secret = _account_totp_secret(email)
+            return login_with_browser(
+                email, password, totp_secret, proxy=proxy, driver_mode=driver,
+                allow_email_otp=True, email_source=email_source, purpose="live_check",
+                **({"account_id": account_id} if account_id is not None else {}),
+            )
         existing_access_token = _stored_access_token(email)
         has_totp = bool(_account_totp_secret(email))
         if existing_access_token and not has_totp:
@@ -829,8 +954,12 @@ def check_account_liveness(
         if code:
             logger.warning("[查活] 已废号：%s %s", email, code)
             return {"ok": False, "status": "deactivated", "checked_at": checked_at, "error": code}
-        logger.warning("[查活] 失败：%s %s: %s", email, type(exc).__name__, str(exc)[:260])
-        return {"ok": False, "status": "failed", "checked_at": checked_at, "error": f"{type(exc).__name__}: {str(exc)[:500]}"}
+        detail = str(exc)
+        for secret in (password, totp_secret):
+            if secret:
+                detail = detail.replace(secret, "[已隐藏]")
+        logger.warning("[查活] 失败：%s %s: %s", email, type(exc).__name__, detail[:260])
+        return {"ok": False, "status": "failed", "checked_at": checked_at, "error": f"{type(exc).__name__}: {detail[:500]}"}
     finally:
         try:
             logger.info("[查活] 结束：%s", email)

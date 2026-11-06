@@ -4,6 +4,17 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>GPT 注册控制台</title>
+  <script>
+    (function(){
+      try {
+        if (localStorage.getItem('sidebar_collapsed') === '0') {
+          document.documentElement.classList.add('sidebar-expanded');
+        } else {
+          document.documentElement.classList.add('sidebar-collapsed');
+        }
+      } catch(e) {}
+    })();
+  </script>
   <style>
     * { box-sizing: border-box; }
     html { max-width: 100%; overflow-x: clip; }
@@ -13,15 +24,24 @@
       --red: #c2413a; --amber: #b7791f;
       --page-max-width: none;
       --page-gutter: 24px;
-      --sidebar-width: 232px;
+      --sidebar-width-expanded: 232px;
+      --sidebar-width-collapsed: 64px;
+      --sidebar-width: var(--sidebar-width-collapsed);
       --sidebar-accent: #3b66f5;
       --sidebar-accent-soft: #eef2ff;
+    }
+    html.sidebar-expanded, body.sidebar-expanded {
+      --sidebar-width: var(--sidebar-width-expanded);
+    }
+    html.sidebar-collapsed, body.sidebar-collapsed {
+      --sidebar-width: var(--sidebar-width-collapsed);
     }
     body {
       margin: 0; max-width: 100%; overflow-x: clip;
       padding-left: var(--sidebar-width);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
       background: var(--bg); color: var(--text);
+      transition: padding-left .2s cubic-bezier(0.4, 0, 0.2, 1);
     }
     body.modal-open { overflow: hidden; position: fixed; left: 0; right: 0; width: 100%; }
     h1, h2, h3, p { margin: 0; }
@@ -115,11 +135,11 @@
     th { user-select: none; }
     td.wrap, th.wrap { white-space: normal; word-break: break-word; }
     td.center, th.center { text-align: center; }
-    .col-check { width: 42px; }
-    .col-id { width: 72px; }
+    .col-check { width: 35px; }
+    .col-id { width: 60px; }
     .col-status { width: 96px; }
     .col-email { width: 260px; }
-    .col-source { width: 96px; }
+    .col-source { width: 90px; }
     .col-token { width: 220px; }
     .col-note { width: 180px; }
     .col-small { width: 78px; }
@@ -167,11 +187,26 @@
     .extract-link-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 10px rgba(22,128,60,.10); }
     .extract-copy { color: #166534; background: linear-gradient(180deg, #f0fbf5, #e3f5ea); border-color: #b9dfc9; }
     .extract-qr { color: #1d4ed8; background: linear-gradient(180deg, #f3f7ff, #e8f0ff); border-color: #bdd0ff; }
-    .extract-link-expire {
-      flex-basis: 100%; margin-top: 1px; color: #667085; font-size: 12px;
-      display: inline-flex; align-items: center; gap: 4px;
+    .extract-pay { color: #b45309; background: linear-gradient(180deg, #fffbeb, #fef3c7); border-color: #fde68a; }
+    .extract-pay:disabled {
+      opacity: 0.55; cursor: not-allowed !important;
+      color: #909399 !important; background: #f4f4f5 !important; border-color: #e4e7ed !important;
+      transform: none !important; box-shadow: none !important;
     }
-    .extract-link-error {
+    .extract-link-expire {
+      flex-basis: 100%; margin-top: 2px; color: #64748b; font-size: 12px;
+      display: inline-flex; align-items: center; gap: 3px; white-space: nowrap;
+    }
+    .extract-link-expire .countdown-text {
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+    .extract-link-expire .countdown-text.is-active {
+      color: #16a34a;
+    }
+    .extract-link-expire .countdown-text.is-expired {
+      color: #dc2626;
+    }
       flex-basis: 100%; color: var(--red); font-size: 12px; line-height: 1.35;
       max-width: 260px; white-space: normal; overflow-wrap: anywhere;
     }
@@ -214,8 +249,9 @@
     #qrPanel .qr-link { display:block; word-break:break-all; white-space:normal; font-size:12px; color:var(--muted); margin-top:8px; }
     .hidden { display: none !important; }
     #toast {
-      position: fixed; right: 18px; bottom: 18px; padding: 10px 14px; border-radius: 8px;
-      background: #101827; color: #fff; box-shadow: 0 14px 30px rgba(15,23,42,.24);
+      position: fixed; right: 24px; bottom: 24px; z-index: 99999; padding: 10px 16px; border-radius: 8px;
+      background: #101827; color: #fff; font-size: 13px; font-weight: 500;
+      box-shadow: 0 14px 30px rgba(15,23,42,.35), 0 4px 10px rgba(0,0,0,.15);
       opacity: 0; transform: translateY(8px); pointer-events: none; transition: opacity .18s ease, transform .18s ease;
     }
     #toast.show { opacity: 1; transform: translateY(0); }
@@ -247,17 +283,26 @@
     }
     .roxy-invite-link:hover { background: #e0ebff; }
 
-    /* ---- 左侧边栏（新增，暂不替换顶栏导航） ---- */
+    /* ---- 左侧边栏 ---- */
     .app-sidebar {
       position: fixed; left: 0; top: 0; bottom: 0; z-index: 200;
       width: var(--sidebar-width); display: flex; flex-direction: column;
       background: #fff; border-right: 1px solid #eef0f4;
       box-shadow: 1px 0 0 rgba(15, 23, 42, 0.02);
+      transition: width .2s cubic-bezier(0.4, 0, 0.2, 1);
+      box-sizing: border-box;
     }
     .sidebar-brand {
-      display: flex; align-items: center; gap: 10px;
-      height: 64px; padding: 0 18px; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: space-between;
+      height: 64px; padding: 0 12px; flex-shrink: 0;
       border-bottom: 1px solid #f1f5f9;
+      box-sizing: border-box;
+      position: relative;
+    }
+    .sidebar-brand-main {
+      display: flex; align-items: center; gap: 10px; min-width: 0;
+      overflow: hidden; flex: 1;
+      transition: opacity .15s ease, width .15s ease;
     }
     .sidebar-brand-icon {
       width: 28px; height: 30px; flex-shrink: 0;
@@ -266,19 +311,55 @@
       font-size: 15px; font-weight: 800; color: #0f172a;
       letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
+    .sidebar-toggle-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 28px; height: 28px; border: 1px solid #e2e8f0; border-radius: 6px;
+      background: #fff; color: #64748b; cursor: pointer; padding: 0; flex-shrink: 0;
+      transition: background .15s ease, color .15s ease, border-color .15s ease;
+    }
+    .sidebar-toggle-btn:hover {
+      color: #0f172a; border-color: #cbd5e1; background: #f8fafc;
+    }
+    .sidebar-toggle-icon {
+      width: 16px; height: 16px; flex-shrink: 0;
+      transition: transform .2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    /* 侧边栏收起时的 Brand 与 Toggle 按钮 */
+    .sidebar-collapsed .sidebar-brand {
+      padding: 0;
+      justify-content: center;
+    }
+    .sidebar-collapsed .sidebar-brand-main {
+      display: none;
+    }
+    .sidebar-collapsed .sidebar-toggle-btn {
+      width: 38px; height: 38px; border-radius: 8px;
+    }
+    .sidebar-collapsed .sidebar-toggle-icon {
+      transform: rotate(180deg);
+    }
+
+    /* 侧栏导航菜单 */
     .sidebar-nav {
       flex: 1; overflow-y: auto; overflow-x: hidden;
-      padding: 12px 10px 20px; display: flex; flex-direction: column; gap: 2px;
+      padding: 12px 8px 20px; display: flex; flex-direction: column; gap: 4px;
       background: transparent; border: none; width: auto; max-width: none;
+    }
+    .sidebar-collapsed .sidebar-nav {
+      overflow: visible;
+      padding: 12px 6px 20px;
     }
     .app-sidebar .sidebar-nav button,
     .app-sidebar .sidebar-nav button.sidebar-item {
+      position: relative;
       width: 100%; display: flex; align-items: center; gap: 10px;
       border: none; border-bottom: none; border-radius: 10px;
       background: transparent; color: #475569;
       font: inherit; font-size: 14px; font-weight: 600;
       padding: 10px 12px; cursor: pointer; text-align: left;
-      transition: background .15s ease, color .15s ease;
+      transition: background .15s ease, color .15s ease, padding .2s ease;
+      box-sizing: border-box;
     }
     .app-sidebar .sidebar-nav button:hover {
       color: #0f172a; background: #f8fafc;
@@ -288,36 +369,107 @@
       border-bottom: none;
     }
     .sidebar-item-icon {
-      width: 18px; height: 18px; flex-shrink: 0;
+      width: 20px; height: 20px; flex-shrink: 0;
       stroke: currentColor; fill: none;
     }
     .sidebar-item-label { flex: 1; min-width: 0; line-height: 1.2; }
+
+    .sidebar-collapsed .app-sidebar .sidebar-nav button.sidebar-item {
+      padding: 11px 0;
+      justify-content: center;
+      gap: 0;
+    }
+    .sidebar-collapsed .sidebar-item-label {
+      display: none;
+    }
+
+    /* 底部工具条 */
     .sidebar-footer {
-      flex-shrink: 0; padding: 10px; border-top: 1px solid #f1f5f9;
-      display: flex; flex-direction: column; gap: 2px;
+      flex-shrink: 0; padding: 10px 8px; border-top: 1px solid #f1f5f9;
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    .sidebar-collapsed .sidebar-footer {
+      padding: 10px 6px;
+      overflow: visible;
     }
     .sidebar-footer a {
+      position: relative;
       display: flex; align-items: center; gap: 10px;
       border-radius: 10px; padding: 10px 12px;
       color: #64748b; text-decoration: none;
       font-size: 13px; font-weight: 600;
-      transition: background .15s ease, color .15s ease;
+      transition: background .15s ease, color .15s ease, padding .2s ease;
+      box-sizing: border-box;
     }
     .sidebar-footer a:hover { color: var(--sidebar-accent); background: var(--sidebar-accent-soft); }
     .sidebar-footer-icon {
-      width: 16px; height: 16px; flex-shrink: 0;
+      width: 18px; height: 18px; flex-shrink: 0;
       stroke: currentColor; fill: none;
     }
     .sidebar-logout { margin: 0; }
     .sidebar-logout button {
+      position: relative;
       width: 100%; display: flex; align-items: center; gap: 10px;
       border: none; border-radius: 10px; padding: 10px 12px;
       background: transparent; color: #64748b;
       font: inherit; font-size: 13px; font-weight: 600;
       cursor: pointer; text-align: left;
-      transition: background .15s ease, color .15s ease;
+      transition: background .15s ease, color .15s ease, padding .2s ease;
+      box-sizing: border-box;
     }
     .sidebar-logout button:hover { color: #b3261e; background: #fff0ef; }
+
+    .sidebar-collapsed .sidebar-footer a,
+    .sidebar-collapsed .sidebar-logout button {
+      padding: 10px 0;
+      justify-content: center;
+      gap: 0;
+    }
+    .sidebar-collapsed .sidebar-footer span {
+      display: none;
+    }
+
+    /* 侧边栏收起时的 Tooltip 悬停气泡 */
+    .sidebar-collapsed .app-sidebar [data-tooltip]::before {
+      content: "";
+      position: absolute;
+      left: calc(100% + 4px);
+      top: 50%;
+      transform: translateY(-50%);
+      border: 5px solid transparent;
+      border-right-color: #1e293b;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity .15s ease;
+      pointer-events: none;
+      z-index: 1001;
+    }
+    .sidebar-collapsed .app-sidebar [data-tooltip]::after {
+      content: attr(data-tooltip);
+      position: absolute;
+      left: calc(100% + 9px);
+      top: 50%;
+      transform: translateY(-50%);
+      background: #1e293b;
+      color: #fff;
+      font-size: 12px;
+      font-weight: 500;
+      padding: 5px 10px;
+      border-radius: 6px;
+      white-space: nowrap;
+      pointer-events: none;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity .15s ease;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+      z-index: 1001;
+      line-height: 1.2;
+    }
+    .sidebar-collapsed .app-sidebar [data-tooltip]:hover::before,
+    .sidebar-collapsed .app-sidebar [data-tooltip]:hover::after {
+      opacity: 1;
+      visibility: visible;
+    }
 
     /* ---- 新版注册区（工具条 + 表，旧区不改） ---- */
     .jobs-panel-v2 {
@@ -380,11 +532,13 @@
     .accounts-filter-v2 .acc-v2-date:hover,
     .accounts-filter-v2 .acc-v2-date:focus { border-color: #409eff; outline: none; }
     .accounts-filter-v2 .acc-v2-date-select,
-    .codex-filter-v2 .acc-v2-date-select {
+    .codex-filter-v2 .acc-v2-date-select,
+    .jobs-toolbar-v2 .acc-v2-date-select {
       position: relative; display: inline-flex; vertical-align: middle;
     }
     .accounts-filter-v2 .acc-v2-date-select-btn,
-    .codex-filter-v2 .acc-v2-date-select-btn {
+    .codex-filter-v2 .acc-v2-date-select-btn,
+    .jobs-toolbar-v2 .acc-v2-date-select-btn {
       min-height: 32px; margin: 0; padding: 0 28px 0 12px;
       border: 1px solid #dcdfe6; border-radius: 6px; background: #fff;
       color: #606266; font: inherit; font-size: 13px; cursor: pointer;
@@ -392,21 +546,34 @@
       box-sizing: border-box; position: relative; text-align: left;
       white-space: nowrap;
     }
+    .jobs-toolbar-v2 .acc-v2-date-select-btn { min-height: 40px; font-size: 14px; }
+    .jobs-toolbar-v2 select {
+      min-height: 40px; padding: 0 10px; border-radius: 6px;
+      border: 1px solid #dcdfe6; background: #fff; color: #606266;
+      font: inherit; font-size: 14px; box-sizing: border-box;
+      outline: none; transition: .1s; cursor: pointer;
+    }
+    .jobs-toolbar-v2 select:hover,
+    .jobs-toolbar-v2 select:focus { border-color: #377DFF; }
     .accounts-filter-v2 .acc-v2-date-select-btn:hover,
     .accounts-filter-v2 .acc-v2-date-select.open .acc-v2-date-select-btn,
     .codex-filter-v2 .acc-v2-date-select-btn:hover,
-    .codex-filter-v2 .acc-v2-date-select.open .acc-v2-date-select-btn {
+    .codex-filter-v2 .acc-v2-date-select.open .acc-v2-date-select-btn,
+    .jobs-toolbar-v2 .acc-v2-date-select-btn:hover,
+    .jobs-toolbar-v2 .acc-v2-date-select.open .acc-v2-date-select-btn {
       border-color: #377DFF;
     }
     .accounts-filter-v2 .acc-v2-date-select-btn::after,
-    .codex-filter-v2 .acc-v2-date-select-btn::after {
+    .codex-filter-v2 .acc-v2-date-select-btn::after,
+    .jobs-toolbar-v2 .acc-v2-date-select-btn::after {
       content: ""; position: absolute; right: 10px; top: 50%;
       width: 0; height: 0; margin-top: -2px;
       border-left: 5px solid transparent; border-right: 5px solid transparent;
       border-top: 6px solid #909399;
     }
     .accounts-filter-v2 .acc-v2-date-select.open .acc-v2-date-select-btn::after,
-    .codex-filter-v2 .acc-v2-date-select.open .acc-v2-date-select-btn::after {
+    .codex-filter-v2 .acc-v2-date-select.open .acc-v2-date-select-btn::after,
+    .jobs-toolbar-v2 .acc-v2-date-select.open .acc-v2-date-select-btn::after {
       margin-top: -4px; border-top: none; border-bottom: 6px solid #909399;
     }
     .acc-v2-date-select-menu {
@@ -734,21 +901,42 @@
     .accounts-table-v2 thead th:first-child { padding-left: 16px; }
     .accounts-table-v2 thead th:last-child { padding-right: 16px; }
     .accounts-table-v2 .col-check {
-      width: 48px; padding-left: 16px; padding-right: 8px;
+      width: 35px; padding-left: 16px; padding-right: 8px;
       text-align: left; vertical-align: middle;
     }
-    .accounts-table-v2 .col-id { width: 72px; }
-    .accounts-table-v2 .col-email { width: 330px; }
+    .accounts-table-v2 .col-id { width: 60px; }
+    .accounts-table-v2 .col-email { width: 260px; }
     .accounts-table-v2 .col-source { width: 90px; }
-    .accounts-table-v2 .col-token { width: 100px; }
-    .accounts-table-v2 .col-password { width: 120px; }
-    .accounts-table-v2 .col-plan { width: 220px; }
-    .accounts-table-v2 .col-note { width: 140px; }
-    .accounts-table-v2 .col-small { width: 170px; }
-    .accounts-table-v2 .col-status { width: 100px; }
+    .accounts-table-v2 .col-token { width: 96px; text-align: center; padding-left: 4px; padding-right: 4px; }
+    .accounts-table-v2 .col-password { width: 88px; }
+    .accounts-table-v2 .col-plan { width: 240px; }
+    .accounts-table-v2 .col-note { width: 110px; }
+    .accounts-table-v2 .col-small { width: 160px; }
+    .accounts-table-v2 .col-status { width: 95px; }
     .accounts-table-v2 .col-agent { width: 140px; }
-    .accounts-table-v2 .col-time { width: 170px; }
-    .accounts-table-v2 .col-actions { width: 148px; }
+    .accounts-table-v2 .col-time { width: 108px; white-space: nowrap; cursor: default; }
+    .accounts-table-v2 .col-actions {
+      width: 148px;
+      position: sticky; right: 0;
+      background: #fff;
+      box-shadow: -3px 0 6px rgba(0,0,0,0.04);
+      z-index: 2;
+    }
+    .accounts-table-v2 tr.has-open-more,
+    .accounts-table-v2 tr:has(.acc-v2-more.open),
+    .accounts-table-v2 tr.has-open-more .col-actions,
+    .accounts-table-v2 tr:has(.acc-v2-more.open) .col-actions {
+      z-index: 1000 !important;
+    }
+    .accounts-table-v2 tr.is-sold {
+      background: #fafafa;
+    }
+    .accounts-table-v2 tr.is-sold .acc-v2-email {
+      color: #909399;
+    }
+    .accounts-table-v2 thead th.col-actions {
+      background: #f5f7fa;
+    }
     .accounts-table-v2 input[type="checkbox"] {
       width: 16px !important; height: 16px !important;
       min-width: 16px !important; min-height: 16px !important;
@@ -778,11 +966,17 @@
     .accounts-table-v2 tbody td:last-child { padding-right: 16px; }
     .accounts-table-v2 .col-email,
     .accounts-table-v2 .col-password,
-    .accounts-table-v2 .col-plan,
     .accounts-table-v2 .col-note,
     .accounts-table-v2 .col-agent,
     .accounts-table-v2 .col-actions {
       white-space: normal; overflow: visible; text-overflow: clip; vertical-align: middle;
+    }
+    .accounts-table-v2 .col-plan {
+      width: 240px; white-space: normal; overflow: hidden; text-overflow: ellipsis; vertical-align: middle;
+    }
+    .accounts-table-v2 .acc-plan-box {
+      display: flex; flex-direction: column; align-items: flex-start;
+      max-width: 100%; width: 100%; min-width: 0; overflow: hidden;
     }
     .accounts-table-v2 .acc-v2-email {
       font-weight: 700; color: #303133; line-height: 1.35;
@@ -1580,7 +1774,7 @@
     .outlook-panel-v2 .jobs-v2-pager { border-top: 1px solid #ebeef5; }
 
     /* ---- 邮箱池导入弹窗 ---- */
-    #outlookImportModal:not(.hidden), #emailChangeModalV2:not(.hidden) {
+    #outlookImportModal:not(.hidden), #emailChangeModalV2:not(.hidden), #accountImportModalV2:not(.hidden) {
       position: fixed; inset: 0; z-index: 1200;
       display: flex; align-items: center; justify-content: center;
       padding: 24px; box-sizing: border-box;
@@ -2031,46 +2225,53 @@
   </style>
 </head>
 <body>
-<aside class="app-sidebar" aria-label="主导航">
+<aside class="app-sidebar" id="appSidebar" aria-label="主导航">
   <div class="sidebar-brand">
-    <svg class="sidebar-brand-icon" viewBox="0 0 44 48" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-      <defs>
-        <linearGradient id="sidebarLogoGrad" x1="10" y1="4" x2="34" y2="44" gradientUnits="userSpaceOnUse">
-          <stop stop-color="#3b66f5"/>
-          <stop offset="1" stop-color="#7c3aed"/>
-        </linearGradient>
-      </defs>
-      <path d="M22 3L38.928 12.75V35.25L22 45L5.072 35.25V12.75L22 3Z" fill="url(#sidebarLogoGrad)"/>
-      <path d="M22 13L30.928 18.25V29.75L22 35L13.072 29.75V18.25L22 13Z" fill="white" fill-opacity="0.92"/>
-    </svg>
-    <span class="sidebar-brand-title">GPT Registrator</span>
+    <div class="sidebar-brand-main">
+      <svg class="sidebar-brand-icon" viewBox="0 0 44 48" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <defs>
+          <linearGradient id="sidebarLogoGrad" x1="10" y1="4" x2="34" y2="44" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#3b66f5"/>
+            <stop offset="1" stop-color="#7c3aed"/>
+          </linearGradient>
+        </defs>
+        <path d="M22 3L38.928 12.75V35.25L22 45L5.072 35.25V12.75L22 3Z" fill="url(#sidebarLogoGrad)"/>
+        <path d="M22 13L30.928 18.25V29.75L22 35L13.072 29.75V18.25L22 13Z" fill="white" fill-opacity="0.92"/>
+      </svg>
+      <span class="sidebar-brand-title">GPT Registrator</span>
+    </div>
+    <button type="button" class="sidebar-toggle-btn" id="sidebarToggleBtn" title="展开/收起菜单栏" aria-label="展开/收起菜单栏">
+      <svg class="sidebar-toggle-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <polyline points="15 18 9 12 15 6"/>
+      </svg>
+    </button>
   </div>
   <nav class="sidebar-nav">
-    <button type="button" data-tab="register" class="sidebar-item active">
+    <button type="button" data-tab="register" class="sidebar-item active" data-tooltip="注册" title="注册">
       <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M12 5v14M5 12h14"/>
       </svg>
       <span class="sidebar-item-label">注册</span>
     </button>
-    <button type="button" data-tab="accounts" class="sidebar-item">
+    <button type="button" data-tab="accounts" class="sidebar-item" data-tooltip="账号" title="账号">
       <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
       </svg>
       <span class="sidebar-item-label">账号</span>
     </button>
-    <button type="button" data-tab="codex" class="sidebar-item">
+    <button type="button" data-tab="codex" class="sidebar-item" data-tooltip="Codex 授权" title="Codex 授权">
       <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
       </svg>
       <span class="sidebar-item-label">Codex 授权</span>
     </button>
-    <button type="button" data-tab="outlook" class="sidebar-item">
+    <button type="button" data-tab="outlook" class="sidebar-item" data-tooltip="邮箱池" title="邮箱池">
       <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><path d="M22 6l-10 7L2 6"/>
       </svg>
       <span class="sidebar-item-label">邮箱池</span>
     </button>
-    <button type="button" data-tab="config" class="sidebar-item">
+    <button type="button" data-tab="config" class="sidebar-item" data-tooltip="配置" title="配置">
       <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
       </svg>
@@ -2078,26 +2279,26 @@
     </button>
   </nav>
   <div class="sidebar-footer">
-    <a href="https://t.me/+gu_cvEKq_vcyZWRl" target="_blank" rel="noopener noreferrer">
+    <a href="https://t.me/+gu_cvEKq_vcyZWRl" target="_blank" rel="noopener noreferrer" data-tooltip="TG 交流群" title="TG 交流群">
       <svg class="sidebar-footer-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/>
       </svg>
       <span>TG 交流群</span>
     </a>
-    <a href="https://github.com/myfanhua/turb-gpt-free-register" target="_blank" rel="noopener noreferrer">
+    <a href="https://github.com/myfanhua/turb-gpt-free-register" target="_blank" rel="noopener noreferrer" data-tooltip="Github 仓库" title="Github 仓库">
       <svg class="sidebar-footer-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/>
       </svg>
       <span>Github 仓库</span>
     </a>
-    <a href="/?ui=legacy" title="切换到历史版顶部导航 UI">
+    <a href="/?ui=legacy" data-tooltip="切换老 UI" title="切换到历史版顶部导航 UI">
       <svg class="sidebar-footer-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M3 6h18M3 12h18M3 18h18"/>
       </svg>
       <span>切换老 UI</span>
     </a>
     <form class="sidebar-logout" method="post" action="/logout">
-      <button type="submit">
+      <button type="submit" data-tooltip="退出登录" title="退出登录">
         <svg class="sidebar-footer-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
         </svg>
@@ -2167,6 +2368,25 @@
         <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnDeleteSelectedJobsV2" disabled title="删除选中的非运行中任务，并同时删除对应日志">删除选中</button>
         <button type="button" class="jobs-tb-btn" id="btnCancelPendingV2" title="把所有排队任务标记为已取消">取消全部排队</button>
         <button type="button" class="jobs-tb-btn" id="btnRefreshJobsV2" title="手动刷新任务列表">刷新</button>
+        <label class="jobs-tb-field" title="按任务状态筛选">状态
+          <select id="jobStatusFilterV2">
+            <option value="">全部状态</option>
+            <option value="success">成功</option>
+            <option value="failed">失败</option>
+            <option value="running">运行中</option>
+            <option value="pending">排队中</option>
+            <option value="stopped">已停止</option>
+            <option value="cancelled">已取消</option>
+          </select>
+        </label>
+        <div class="acc-v2-date-select" id="dateSelectJobsV2">
+          <button type="button" class="acc-v2-date-select-btn" id="btnDateFilterJobsV2" title="按时间筛选日期范围">📅 日期筛选</button>
+          <div class="acc-v2-date-select-menu" id="dateFilterPanelJobsV2"></div>
+        </div>
+        <div class="hidden">
+          <input type="date" id="dateFromJobsV2">
+          <input type="date" id="dateToJobsV2">
+        </div>
         <label class="jobs-tb-field">注册数量
           <span class="el-input-number">
             <input id="regCountV2" type="number" min="1" max="200" value="1" inputmode="numeric">
@@ -2190,6 +2410,7 @@
           </span>
         </label>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnStartV2">开始注册</button>
+        <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnImportAccountsV2" title="批量导入已有账号并重新登录获取 Token、套餐信息">导入账号</button>
       </div>
       <div id="regWarnV2"></div>
       <div class="jobs-table-v2-wrap">
@@ -2253,8 +2474,12 @@
           <label class="acc-v2-inline" title="按账号状态筛选账号">
             <select id="codexStatusFilterV2">
               <option value="">全部状态</option>
+              <option value="sold">已出售</option>
+              <option value="unsold">未出售/可用</option>
               <option value="success">成功</option>
               <option value="failed">失败</option>
+              <option value="live_failed">查活失败</option>
+              <option value="plan_failed">套餐失败</option>
               <option value="retrying">补跑中</option>
               <option value="stopped">已停止</option>
               <option value="skipped">已跳过</option>
@@ -2290,6 +2515,7 @@
           <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedLiveV2" onclick="checkSelectedLive()" title="重新登录选中账号；成功且未封号则标记正常，并刷新最新 AT/accessToken">查活</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedPlansV2" disabled title="查询选中账号当前套餐；free 账号会检查 Plus 试用资格">查套餐</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnExtractSelectedLinksV2" disabled title="给选中的 free(可Plus试用) 账号批量提链，类型按配置 PIX/UPI/KAKAO_PAY/IDEAL">提链</button>
+          <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnPaySelectedAccountsV2" disabled title="给选中的已提链账号批量发起支付（向已配置的支付渠道提交支付链接）">批量支付</button>
         </div>
         <div class="acc-v2-btn-group">
           <span class="acc-v2-btn-group-title">Codex</span>
@@ -2311,6 +2537,8 @@
           <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCopySelectedLoginCredentialsV2" disabled title="把选中账号按“邮箱---密码---2FA密钥”格式复制到剪贴板">复制登录凭据</button>
           <button type="button" class="jobs-tb-btn" id="btnArchiveSelectedAccountsV2" disabled title="归档选中的账号；默认账号列表将不再查询/显示这些账号">归档选中</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnDeleteSelectedAccountsV2" disabled title="删除选中的本地账号/token记录">删除</button>
+          <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnMarkSelectedSoldV2" disabled title="把选中的账号批量标记为“已出售”（不可用状态）">标记已出售</button>
+          <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnMarkSelectedUnsoldV2" disabled title="把选中的账号批量恢复为“未出售/可用”状态">恢复可用</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnDeleteDeactivatedAccounts" onclick="deleteDeactivatedAccounts()" title="删除当前归档范围内全部已废账号，不限当前页；不受其他筛选影响">一键删除已废</button>
         </div>
         <div class="acc-v2-btn-group">
@@ -2618,6 +2846,29 @@
     <div class="outlook-import-foot"><button type="button" class="jobs-tb-btn" id="btnCancelEmailChangeV2">取消</button><button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnSubmitEmailChangeV2">开始换绑</button></div>
   </div>
 </div>
+<div id="accountImportModalV2" class="hidden" role="dialog" aria-modal="true" aria-labelledby="accountImportTitleV2">
+  <div class="outlook-import-dialog" role="document" style="max-width:720px;">
+    <div class="outlook-import-head">
+      <div class="outlook-import-head-main">
+        <h3 id="accountImportTitleV2">导入账号</h3>
+        <p>每行一条：邮箱----密码----2FA密钥。导入后系统会重新登录，获取 Token 和套餐信息，并在账号列表标记来源为“导入”。</p>
+      </div>
+      <button type="button" class="outlook-import-close" id="btnCloseAccountImportV2" aria-label="关闭">×</button>
+    </div>
+    <div class="outlook-import-body">
+      <div class="outlook-import-result" id="accountImportResultV2"></div>
+      <label class="outlook-import-field">
+        <span>账号凭据</span>
+        <textarea id="accountImportTextV2" spellcheck="false" autocomplete="off" placeholder="user@example.com----登录密码----JBSWY3DPEHPK3PXP&#10;user2@example.com---登录密码---另一枚2FA密钥"></textarea>
+        <span class="outlook-import-hint">支持三个或四个短横线分隔；空行会忽略；单次最多 200 个账号。密码和 2FA 不会显示在任务结果中。</span>
+      </label>
+    </div>
+    <div class="outlook-import-foot">
+      <button type="button" class="jobs-tb-btn" id="btnCancelAccountImportV2">取消</button>
+      <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnSubmitAccountImportV2">开始导入</button>
+    </div>
+  </div>
+</div>
 <div class="body hidden" id="logPanel">
   <h3>任务 #<span id="logJobId"></span> 日志 <button class="btn" id="btnCloseLog" style="float:right;min-height:28px;">关闭</button></h3>
   <div class="log" id="logContent">加载中…</div>
@@ -2790,15 +3041,15 @@ function short(v, n=40) { const s = v || ''; return s.length > n ? s.slice(0,n)+
 function copyId(v) { if (!v) return ''; const id = 'c'+(++copySeq); copyStore.set(id, v); return id; }
 function cbtn(label, value, cls='') { const id = copyId(value); return `<button class="${cls}" data-copy-id="${id}" ${id?'':'disabled'}>${label}</button>`; }
 function pill(status) {
-  const map = { available:'可用', used:'已用', failed:'失败', partial_success:'部分成功', disabled:'已停用', pending:'排队', running:'运行中', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消' };
+  const map = { available:'可用', used:'已用', failed:'失败', partial_success:'部分成功', disabled:'已停用', pending:'排队', running:'运行中', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消', needs_email_otp:'需要验证码', deactivated:'账号不可用' };
   return `<span class="pill status-${esc(status)}">${esc(map[status]||status||'-')}</span>`;
 }
 function pillV2(status) {
   const s = String(status || '');
-  const map = { available:'可用', used:'已用', failed:'失败', partial_success:'部分成功', disabled:'已停用', pending:'排队', running:'运行中', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消' };
+  const map = { available:'可用', used:'已用', failed:'失败', partial_success:'部分成功', disabled:'已停用', pending:'排队', running:'运行中', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消', needs_email_otp:'需要验证码', deactivated:'账号不可用' };
   let cls = 'jobs-v2-pill--muted';
   if (s === 'success') cls = 'jobs-v2-pill--success';
-  else if (s === 'failed') cls = 'jobs-v2-pill--failed';
+  else if (s === 'failed' || s === 'needs_email_otp' || s === 'deactivated') cls = 'jobs-v2-pill--failed';
   else if (s === 'running' || s === 'stopping') cls = 'jobs-v2-pill--running';
   else if (s === 'pending' || s === 'cancelled' || s === 'stopped') cls = 'jobs-v2-pill--muted';
   return `<span class="jobs-v2-pill ${cls}">${esc(map[s]||s||'-')}</span>`;
@@ -2876,6 +3127,29 @@ function activateTab(tab, persist=true) {
   if (tab === 'register') refreshJobs();
 }
 $$('nav button').forEach(b => b.addEventListener('click', () => activateTab(b.dataset.tab)));
+
+// ---------- 侧边栏展开/收起切换 ----------
+function initSidebarToggle() {
+  const btn = $('#sidebarToggleBtn');
+  if (!btn) return;
+  function updateSidebarState(collapsed, save) {
+    document.documentElement.classList.toggle('sidebar-collapsed', collapsed);
+    document.body.classList.toggle('sidebar-collapsed', collapsed);
+    document.documentElement.classList.toggle('sidebar-expanded', !collapsed);
+    document.body.classList.toggle('sidebar-expanded', !collapsed);
+    btn.setAttribute('aria-expanded', !collapsed);
+    btn.setAttribute('title', collapsed ? '展开菜单栏' : '收起菜单栏');
+    if (save) localStorage.setItem('sidebar_collapsed', collapsed ? '1' : '0');
+  }
+  const saved = localStorage.getItem('sidebar_collapsed');
+  updateSidebarState(saved !== '0', false);
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const isCollapsed = document.body.classList.contains('sidebar-collapsed');
+    updateSidebarState(!isCollapsed, true);
+  });
+}
+initSidebarToggle();
 
 // ---------- 概览 ----------
 async function loadSummary() {
@@ -2997,6 +3271,19 @@ function bindJobsBodyEvents(bodyEl) {
   if (cancelV2) cancelV2.addEventListener('click', () => cancelAllPendingJobs(cancelV2));
   const refreshV2 = $('#btnRefreshJobsV2');
   if (refreshV2) refreshV2.addEventListener('click', refreshJobs);
+  const statusFilterV2 = $('#jobStatusFilterV2');
+  if (statusFilterV2) statusFilterV2.addEventListener('change', () => {
+    JOB_SELECTED.clear();
+    PAGERS.jobs.page = 1;
+    refreshJobs();
+  });
+  bindDateFilterPanel({
+    btnId: 'btnDateFilterJobsV2',
+    panelId: 'dateFilterPanelJobsV2',
+    fromId: 'dateFromJobsV2',
+    toId: 'dateToJobsV2',
+    onApply: () => { JOB_SELECTED.clear(); PAGERS.jobs.page = 1; refreshJobs(); },
+  });
 
   function stepInputNumber(inputId, delta) {
     const el = document.getElementById(inputId);
@@ -3031,13 +3318,15 @@ function renderJobs() {
       const started = formatDateTime(j.started_at);
       const completed = formatDateTime(j.completed_at);
       const err = j.error_message || '';
+      const importJob = j.job_type === 'account_import';
+      const jobKind = importJob ? '导入登录' : '注册';
       const manualOtp = j.status === 'running' && j.email && j.manual_otp_required;
       return `
       <tr>
         <td class="col-check"><input type="checkbox" class="job-row-check" data-job-id="${esc(j.id)}" ${JOB_SELECTED.has(Number(j.id)) ? 'checked' : ''} ${running ? 'disabled title="运行中的任务不能选择"' : ''}></td>
         <td class="col-id">#${esc(j.id)}${j.parent_job_id ? `<div class="sub-cell" title="重试自任务 #${esc(j.parent_job_id)}">↳ #${esc(j.parent_job_id)} · ${esc(j.retry_attempt || 1)}</div>` : ''}</td>
         <td class="col-status">${pillV2(j.display_status || j.status)}</td>
-        <td class="col-email" title="${esc(j.email || '-')}">${esc(j.email || '-')}</td>
+        <td class="col-email" title="${esc(j.email || '-')}"><div>${esc(j.email || '-')}</div><div class="sub-cell">${jobKind}${j.account_id ? ` · 账号 #${esc(j.account_id)}` : ''}</div></td>
         <td class="col-time" title="${esc(started)}">${esc(started)}</td>
         <td class="col-time" title="${esc(completed)}">${esc(completed)}</td>
         <td class="col-traffic">${formatTraffic(j.network_traffic)}</td>
@@ -3080,13 +3369,20 @@ function updateJobsSelectionUi(pageRows = null) {
 async function refreshJobs() {
   try {
     const p = PAGERS.jobs;
-    const res = await api(`/api/jobs?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}`);
+    const status = ($('#jobStatusFilterV2')?.value || '').trim();
+    const dateFrom = ($('#dateFromJobsV2')?.value || '').trim();
+    const dateTo = ($('#dateToJobsV2')?.value || '').trim();
+    let url = `/api/jobs?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}`;
+    if (status) url += `&status=${encodeURIComponent(status)}`;
+    if (dateFrom) url += `&date_from=${encodeURIComponent(dateFrom)}`;
+    if (dateTo) url += `&date_to=${encodeURIComponent(dateTo)}`;
+    const res = await api(url);
     const nextJobs = res.items || [];
     JOBS_TOTAL = Number(res.total || nextJobs.length || 0);
     JOB_STATUS_COUNTS = res.status_counts || {};
     const totalPages = Math.max(1, Math.ceil(JOBS_TOTAL / p.size));
     if (p.page > totalPages) { p.page = totalPages; return refreshJobs(); }
-    const nextSignature = JSON.stringify({items: nextJobs, total: JOBS_TOTAL, status_counts: JOB_STATUS_COUNTS, page: p.page, size: p.size});
+    const nextSignature = JSON.stringify({items: nextJobs, total: JOBS_TOTAL, status_counts: JOB_STATUS_COUNTS, page: p.page, size: p.size, status, dateFrom, dateTo});
     JOBS = nextJobs;
     if (nextSignature !== jobsRenderSignature) {
       jobsRenderSignature = nextSignature;
@@ -3105,7 +3401,8 @@ function updateModalScrollLock() {
     || !$('#emailChangeLogPanel').classList.contains('hidden')
     || !$('#qrPanel').classList.contains('hidden')
     || !$('#outlookImportModal').classList.contains('hidden')
-    || !$('#emailChangeModalV2').classList.contains('hidden');
+    || !$('#emailChangeModalV2').classList.contains('hidden')
+    || !$('#accountImportModalV2').classList.contains('hidden');
   const locked = document.body.classList.contains('modal-open');
   if (opened && !locked) {
     modalScrollY = window.scrollY || document.documentElement.scrollTop || 0;
@@ -3239,7 +3536,7 @@ async function deleteSelectedJobs() {
 async function retryJob(jobId, btn) {
   const job = JOBS.find(j => Number(j.id) === Number(jobId));
   if (!job || !job.retryable) { showToast('该任务当前不可重试'); return; }
-  const actionText = job.retry_action === 'codex' ? '仅补跑 Codex 授权' : '创建新的完整注册任务';
+  const actionText = job.retry_action === 'codex' ? '仅补跑 Codex 授权' : (job.retry_action === 'account_import' ? '使用已保存凭据重新登录' : '创建新的完整注册任务');
   if (!confirm(`确定${job.retry_label || '重试'}任务 #${jobId}？\n\n${actionText}\n原任务记录和日志会保留。`)) return;
   btn.disabled = true;
   try {
@@ -3282,7 +3579,8 @@ async function retrySelectedJobs() {
 
 function openLog(jobId) {
   activeLogJob = jobId;
-  $('#logJobId').textContent = jobId;
+  const logJob = JOBS.find(j => Number(j.id) === Number(jobId));
+  $('#logJobId').textContent = logJob?.job_type === 'account_import' ? `${jobId}（账号登录）` : jobId;
   $('#logPanel').classList.remove('hidden');
   updateModalScrollLock();
   $('#logContent').textContent = '加载中…';
@@ -3298,7 +3596,7 @@ async function pollLog() {
     const atBottom = c.scrollTop + c.clientHeight >= c.scrollHeight - 30;
     c.textContent = r.log || '(暂无日志)';
     if (atBottom) c.scrollTop = c.scrollHeight;
-    if (r.job && ['success','failed','stopped','cancelled'].includes(r.job.status)) clearInterval(logTimer);
+    if (r.job && ['success','failed','stopped','cancelled','needs_email_otp','deactivated'].includes(r.job.status)) clearInterval(logTimer);
   } catch(e) {}
 }
 
@@ -3400,6 +3698,21 @@ async function pollAccountPlanStatuses() {
         if (wasChecking && !isChecking) needsFullReload = true;
         if (wasExtracting && !isExtracting) needsFullReload = true;
         if (wasAgenting && !isAgenting) needsFullReload = true;
+        const wasPaying = ['queued', 'running'].includes(account?.payment_status);
+        const isPaying = ['queued', 'running'].includes(item.payment_status);
+        if (wasPaying && !isPaying) needsFullReload = true;
+        if (item.payment_status === 'success' && !['queued', 'running'].includes(item.plan_check_status)) {
+          const itemPlan = (item.current_plan_type || item.plan_type || '').toLowerCase();
+          if (!itemPlan.includes('plus') && !itemPlan.includes('pro') && !itemPlan.includes('team')) {
+            item.plan_check_status = 'running';
+            needsFullReload = true;
+            api('/api/accounts/check-plan', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({account_id: item.id}),
+            }).catch(() => {});
+          }
+        }
         Object.assign(account, item);
       });
       planStatusRevision = snapshot.revision || '';
@@ -3450,8 +3763,11 @@ function _totpCellV2(r) {
     return `<div class="agent-token-cell"><span class="pill status-running"${titleAttr}>${label}</span></div>`;
   }
   const btnTitle = titleText ? ` title="${esc(titleText)}"` : ` title="为该账号开启 2FA，并把 TOTP 密钥写回账号信息"`;
+  const isSold = r.status === 'sold';
   const btn = r.has_access_token
-    ? `<button type="button" class="acc-v2-twofa-btn" data-account-totp-setup="${esc(r.id)}"${btnTitle}>开启2FA</button>`
+    ? (isSold
+        ? `<button type="button" class="acc-v2-twofa-btn" disabled title="账号已出售，不可操作">开启2FA</button>`
+        : `<button type="button" class="acc-v2-twofa-btn" data-account-totp-setup="${esc(r.id)}"${btnTitle}>开启2FA</button>`)
     : `<span class="acc-v2-muted">无Token</span>`;
   return `<div class="agent-token-cell">${btn}</div>`;
 }
@@ -3569,9 +3885,12 @@ function _planCell(r) {
     return `<div class="extract-link-cell"><span class="pill status-failed" title="${[esc(reason), lastTitle].filter(Boolean).join('；')}">查询失败${esc(lastText)}</span><div class="extract-link-error" title="${esc(reason)}">${esc(reason)}</div></div>`;
   }
   const lower = plan.toLowerCase();
+  const checkedOk = ok === true || r.plan_check_status === 'success';
 
   if (lower === 'free') {
-    const checkedOk = ok === true || r.plan_check_status === 'success';
+    if (r.status === 'sold') {
+      return `<span class="pill status-used" title="${title}">${esc(plan)}（已售）</span>`;
+    }
     if (!checkedOk) {
       return `<span class="pill status-running" title="${title}">${esc(plan)}（待查资格）</span>`;
     }
@@ -3582,25 +3901,39 @@ function _planCell(r) {
     return _promoStackHtml('free', cls, promoSummaries, t, detailBtn);
   }
 
-  const cls = 'status-success';
+  const isSold = r.status === 'sold';
+  const cls = isSold ? 'status-used' : 'status-success';
   const expireRaw = r.plan_expires_at || r.expires_at || r.plan_renews_at || r.renews_at || '';
   const expire = _fmtPlanTime(expireRaw, true);
-  const parts = [];
   const billing = _billingLabel(r.billing_period);
-  if (billing) parts.push(billing);
-  if (r.billing_currency) parts.push(r.billing_currency);
-  if (expire) parts.push(`到期 ${expire}`);
   const discount = _discountLabel(r);
-  if (discount) parts.push(discount);
-  const text = parts.length ? `${plan}（${parts.join('/')}）` : plan;
+
+  const headParts = [];
+  if (billing) headParts.push(billing);
+  if (r.billing_currency) headParts.push(r.billing_currency);
+  if (r.rate_limit_label) headParts.push(r.rate_limit_label);
+  const headText = headParts.length ? `${plan}（${headParts.join('/')}）` : plan;
+
+  const subParts = [];
+  if (expire) subParts.push(`到期 ${expire}`);
+  if (discount) subParts.push(discount);
+  const subHtml = subParts.length ? `<div class="acc-v2-sub" style="margin-top:2px;font-size:11px;color:#909399;line-height:1.2;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(subParts.join(' · '))}">${esc(subParts.join(' · '))}</div>` : '';
+
   const detail = [title];
+  if (r.rate_limit_label) {
+    const usedText = (r.rate_limit_used_percent !== undefined && r.rate_limit_used_percent !== null) ? ` (已用 ${r.rate_limit_used_percent}%)` : '';
+    detail.push(`速率限制: ${r.rate_limit_label}${usedText}`);
+  }
   if (expireRaw) detail.push(`到期时间: ${expireRaw}`);
   if (r.plan_renews_at) detail.push(`续费时间: ${r.plan_renews_at}`);
   if (r.discount_expires_at) detail.push(`折扣结束: ${r.discount_expires_at}`);
   if (r.discount_promo_campaign_id) detail.push(`优惠: ${r.discount_promo_campaign_id}`);
-  return _promoStackHtml(text, cls, promoSummaries, detail.join('；'));
+  return `<div class="acc-plan-box"><span class="pill ${cls}" style="max-width:100%;box-sizing:border-box;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(detail.join('；'))}">${esc(headText)}${isSold ? '（已售）' : ''}</span>${subHtml}</div>`;
 }
 function _planAction(r) {
+  if (r.status === 'sold') {
+    return `<button data-plan-check="${esc(r.id)}" disabled title="账号已出售，不可操作">查套餐</button>`;
+  }
   if (['queued','running'].includes(r.plan_check_status)) {
     const automatic = r.plan_check_trigger === 'registration_auto';
     const queued = r.plan_check_status === 'queued';
@@ -3609,16 +3942,88 @@ function _planAction(r) {
   }
   return `<button data-plan-check="${esc(r.id)}" title="查询当前套餐；free 账号会检查 Plus 试用资格">查套餐</button>`;
 }
-function _fmtExtractExpire(v) {
-  if (!v) return '';
+function _parseExtractLinkExpiresMs(v) {
+  if (!v) return 0;
   const raw = String(v).trim();
   let n = Number(raw);
   if (!Number.isNaN(n) && n > 0) {
-    if (n > 1e12) n = Math.floor(n / 1000);
-    const d = new Date(n * 1000);
-    if (!Number.isNaN(d.getTime())) return _fmtPlanTime(d.toISOString(), false);
+    return n > 1e12 ? n : n * 1000;
   }
-  return _fmtPlanTime(raw, false) || raw;
+  const d = new Date(raw);
+  const t = d.getTime();
+  return Number.isNaN(t) ? 0 : t;
+}
+function _renderExtractLinkCountdown(expiresAt) {
+  const expireMs = _parseExtractLinkExpiresMs(expiresAt);
+  if (!expireMs) return '';
+  const now = Date.now();
+  const diffSec = Math.floor((expireMs - now) / 1000);
+  if (diffSec <= 0) {
+    return `<div class="extract-link-expire" data-extract-expire-ms="${expireMs}">有效期：<span class="countdown-text is-expired">已过期</span></div>`;
+  }
+  const m = Math.floor(diffSec / 60);
+  const s = diffSec % 60;
+  const text = `${m}分${s < 10 ? '0' : ''}${s}秒`;
+  return `<div class="extract-link-expire" data-extract-expire-ms="${expireMs}">有效期：<span class="countdown-text is-active">${text}</span></div>`;
+}
+let extractLinkCountdownTimer = null;
+function updateAllExtractLinkCountdowns() {
+  const now = Date.now();
+  const nodes = document.querySelectorAll('.extract-link-expire[data-extract-expire-ms]');
+  nodes.forEach(el => {
+    const expireMs = Number(el.dataset.extractExpireMs || 0);
+    if (!expireMs) return;
+    const diffSec = Math.floor((expireMs - now) / 1000);
+    const span = el.querySelector('.countdown-text');
+    if (!span) return;
+    const cell = el.closest('.extract-link-cell');
+    const payBtn = cell ? cell.querySelector('.extract-pay') : null;
+
+    if (diffSec <= 0) {
+      if (span.textContent !== '已过期') {
+        span.textContent = '已过期';
+        span.className = 'countdown-text is-expired';
+      }
+      if (payBtn && !payBtn.disabled) {
+        payBtn.disabled = true;
+        payBtn.title = '支付链接已过期，请重新提链';
+      }
+    } else {
+      const m = Math.floor(diffSec / 60);
+      const s = diffSec % 60;
+      const text = `${m}分${s < 10 ? '0' : ''}${s}秒`;
+      if (span.textContent !== text) {
+        span.textContent = text;
+        span.className = 'countdown-text is-active';
+      }
+      if (payBtn && payBtn.disabled && String(payBtn.title || '').includes('过期')) {
+        payBtn.disabled = false;
+        payBtn.title = '向支付渠道发起支付';
+      }
+    }
+  });
+}
+if (!extractLinkCountdownTimer) {
+  extractLinkCountdownTimer = setInterval(() => {
+    const tabAccounts = document.getElementById('tab-accounts');
+    if (tabAccounts && !tabAccounts.classList.contains('hidden')) {
+      updateAllExtractLinkCountdowns();
+    }
+  }, 1000);
+}
+function _formatExtractLinkError(reason) {
+  if (!reason) return '提链失败';
+  let str = String(reason).trim();
+  str = str.replace(/^[A-Za-z_]+Error:\s*/, '');
+  str = str.replace(/^提链失败[:：]\s*/, '');
+  return '提链失败：' + (str || '未知原因');
+}
+function _formatPaymentError(reason) {
+  if (!reason) return '支付失败';
+  let str = String(reason).trim();
+  str = str.replace(/^[A-Za-z_]+Error:\s*/, '');
+  str = str.replace(/^(?:Foarge\s+)?(?:代付|支付)失败(?:\s*\([^)]*\))?[:：]\s*/, '');
+  return '支付失败：' + (str || '未知原因');
 }
 function _extractLinkCell(r) {
   const s = r.extract_link_status || '';
@@ -3631,28 +4036,102 @@ function _extractLinkCell(r) {
     const typ = (r.extract_link_type || '').toUpperCase();
     const link = r.extract_link_long_url || r.extract_link_copy_paste || '';
     const qr = r.extract_link_image_url_png || r.extract_link_image_url_svg || '';
-    const expire = _fmtExtractExpire(r.extract_link_expires_at || '');
+    const expireHtml = _renderExtractLinkCountdown(r.extract_link_expires_at || '');
+    const expireMs = _parseExtractLinkExpiresMs(r.extract_link_expires_at || '');
+    const isExpired = expireMs > 0 && Date.now() >= expireMs;
+
     const copy = link ? cbtn('复制提链', link, 'extract-link-btn extract-copy') : '';
     const qrBtn = qr ? `<button class="extract-link-btn extract-qr" data-qr-url="${esc(qr)}" title="打开支付二维码图片">查看二维码</button>` : '';
-    const expireHtml = expire ? `<div class="extract-link-expire" title="支付链接过期时间">支付到期：${esc(expire)}</div>` : '';
-    return `<div class="extract-link-cell"><span class="pill status-success" title="${title || esc(link)}">提链成功${typ ? '(' + esc(typ) + ')' : ''}</span>${copy}${qrBtn}${expireHtml}</div>`;
+    const payState = r.payment_status || '';
+    let payQuickBtn = '';
+    if (!['queued', 'running', 'success'].includes(payState) && link) {
+      if (isExpired) {
+        payQuickBtn = `<button class="extract-link-btn extract-pay" data-account-payment="${esc(r.id)}" disabled title="支付链接已过期，请重新提链">支付</button>`;
+      } else {
+        payQuickBtn = `<button class="extract-link-btn extract-pay" data-account-payment="${esc(r.id)}" title="向支付渠道发起支付">支付</button>`;
+      }
+    }
+    return `<div class="extract-link-cell"><span class="pill status-success" title="${title || esc(link)}">提链成功${typ ? '(' + esc(typ) + ')' : ''}</span>${copy}${qrBtn}${payQuickBtn}${expireHtml}</div>`;
   }
   if (s === 'failed') {
-    const reason = err || msg || '未知原因';
+    const rawReason = err || msg || '未知原因';
+    const reason = _formatExtractLinkError(rawReason);
     return `<div class="extract-link-cell"><span class="pill status-failed" title="${esc(reason)}">提链失败</span><div class="extract-link-error" title="${esc(reason)}">${esc(reason)}</div></div>`;
   }
   return '';
+}
+function _paymentCell(r) {
+  const s = r.payment_status || '';
+  if (!s) return '';
+  const err = r.payment_error || '';
+  const msg = r.payment_message || '';
+  const ch = (r.payment_channel || 'foarge').toUpperCase();
+  const taskId = r.payment_task_id ? `#${r.payment_task_id}` : '';
+  const parts = [taskId, ch, err || msg].filter(Boolean);
+  const title = esc(parts.join(' · '));
+  if (s === 'queued') return `<span class="pill status-running" title="${title}">支付排队</span>`;
+  if (s === 'running') return `<span class="pill status-running" title="${title}">${esc(msg || '支付中')}</span>`;
+  if (s === 'success') {
+    return `<span class="pill status-success" title="${title}">支付成功${taskId ? '(' + esc(taskId) + ')' : ''}</span>`;
+  }
+  if (s === 'failed') {
+    const rawReason = err || msg || '支付失败';
+    const reason = _formatPaymentError(rawReason);
+    return `<div class="extract-link-cell"><span class="pill status-failed" title="${esc(reason)}">支付失败</span><div class="extract-link-error" title="${esc(reason)}">${esc(reason)}</div></div>`;
+  }
+  return '';
+}
+function _colPlanCell(r) {
+  const plan = (r.current_plan_type || r.plan_type || '').toString().toLowerCase();
+  const isPlus = plan.includes('plus') || plan.includes('pro') || plan.includes('team') || plan.includes('go');
+  const planHtml = _planCell(r);
+  if (isPlus) return planHtml;
+  if (r.payment_status === 'success') {
+    const method = (r.payment_method || r.extract_link_payment_method || r.extract_link_type || '').toUpperCase();
+    const taskId = r.payment_task_id ? `#${r.payment_task_id}` : '';
+    const ch = (r.payment_channel || 'foarge').toUpperCase();
+    const title = esc([taskId, ch, '代付成功'].filter(Boolean).join(' · '));
+    const label = `支付成功${method ? '(' + esc(method) + ')' : ''}`;
+    return `${planHtml}<div class="acc-v2-sub"><div class="extract-link-cell"><span class="pill status-success" title="${title}">${label}</span></div></div>`;
+  }
+  const extractHtml = _extractLinkCell(r);
+  const payHtml = _paymentCell(r);
+  const subExtract = extractHtml ? `<div class="acc-v2-sub">${extractHtml}</div>` : '';
+  const subPay = payHtml ? `<div class="acc-v2-sub">${payHtml}</div>` : '';
+  return `${planHtml}${subExtract}${subPay}`;
+}
+function _paymentAction(r) {
+  const plan = (r.current_plan_type || r.plan_type || '').toString().toLowerCase();
+  const isPlus = plan.includes('plus') || plan.includes('pro') || plan.includes('team') || plan.includes('go');
+  if (r.status === 'sold' || isPlus) return '';
+  const s = r.payment_status || '';
+  if (['queued', 'running'].includes(s)) {
+    return `<button disabled title="${esc(r.payment_message || '支付任务正在进行中')}">支付中…</button>`;
+  }
+  const link = (r.extract_link_long_url || r.extract_link_copy_paste || '').trim();
+  if (!link) return '';
+  const expireMs = _parseExtractLinkExpiresMs(r.extract_link_expires_at || '');
+  const isExpired = expireMs > 0 && Date.now() >= expireMs;
+  if (isExpired) {
+    return `<button disabled title="支付链接已过期，请重新提链">支付已过期</button>`;
+  }
+  const failedReason = s === 'failed' ? _formatPaymentError(r.payment_error || r.payment_message || '') : '';
+  const label = s === 'success' ? '重新支付' : (s === 'failed' ? '重试支付' : '发起支付');
+  return `<button class="good" data-account-payment="${esc(r.id)}" title="${esc(failedReason ? '上次失败原因：' + failedReason : '向配置的支付渠道提交提链链接进行支付')}">${label}</button>`;
 }
 function _extractLinkAction(r) {
   const s = r.extract_link_status || '';
   if (['queued','running'].includes(s)) return `<button disabled title="${esc(r.extract_link_message || '提链任务执行中')}">提链中…</button>`;
   const plan = (r.current_plan_type || r.plan_type || '').toString().toLowerCase();
   const eligible = plan === 'free' && !!r.plus_trial_eligible;
-  if (!eligible) return '';
-  const failedReason = s === 'failed' ? (r.extract_link_error || r.extract_link_message || '') : '';
+  if (r.status === 'sold' || !eligible) return '';
+  const failedReason = s === 'failed' ? _formatExtractLinkError(r.extract_link_error || r.extract_link_message || '') : '';
   return `<button class="good" data-extract-link="${esc(r.id)}" title="${esc(failedReason ? '重新提链；上次失败原因：' + failedReason : '为该 free(可Plus试用) 账号创建 PIX/UPI/KAKAO_PAY/IDEAL 提链任务')}">提链</button>`;
 }
 function _codexAction(r) {
+  if (r.status === 'sold') {
+    return `<button disabled title="账号已出售，不可操作">补跑</button>`;
+  }
   const s = r.codex_status || '';
   if (s === 'retrying') {
     return `<button class="danger" data-codex-stop="${esc(r.email)}" title="停止该账号正在进行的 Codex 补跑">停止补跑</button> <button data-codex-reset-retrying="${esc(r.email)}" title="只重置状态；不会向运行线程发送停止信号">重置状态</button>`;
@@ -3673,23 +4152,34 @@ function _tokenCellV2(r) {
   else if (live === 'deactivated') liveHtml = `<div class="acc-v2-sub" title="${esc(liveErr || liveAt)}" style="color:#f56c6c">查活: 已废</div>`;
   else if (live === 'failed') liveHtml = `<div class="acc-v2-sub" title="${esc(liveErr || liveAt)}" style="color:#e6a23c">查活: 失败</div>`;
   if (r.has_access_token) {
-    return `<button type="button" class="acc-v2-token-copy" data-account-copy-secret="access_token" data-account-id="${esc(r.id)}" title="复制完整 Token">复制</button>${liveHtml}`;
+    return `<button type="button" class="acc-v2-token-copy" data-account-copy-secret="access_token" data-account-id="${esc(r.id)}" title="复制完整 Token">复制Token</button>${liveHtml}`;
   }
   return `<span class="pill status-failed">无Token</span>${liveHtml}`;
 }
 function _accountsV2MoreMenu(r) {
+  const isSold = r.status === 'sold';
+  const soldBtn = isSold
+    ? `<button type="button" class="good" data-account-mark-unsold="${esc(r.id)}" title="取消已出售标记，恢复该账号为可用状态">恢复可用(取消出售)</button>`
+    : `<button type="button" class="danger" data-account-mark-sold="${esc(r.id)}" title="将该账号标记为已出售（不可用状态）">标记已出售</button>`;
+
   const parts = [
+    soldBtn,
     `<button type="button" data-account-copy-secret="copy_line" data-account-id="${esc(r.id)}">复制整行</button>`,
     `<button type="button" data-account-copy-secret="login_credentials" data-account-id="${esc(r.id)}" title="复制邮箱、注册密码和 2FA 密钥">复制登录凭据</button>`,
     `<button type="button" data-account-note="${esc(r.id)}" title="设置/清空该账号备注">备注</button>`,
-    `<button type="button" data-account-change-email="${esc(r.id)}" title="从指定邮箱来源领取新邮箱并换绑">换绑邮箱</button>`,
+    isSold
+      ? `<button type="button" disabled title="账号已出售，不可操作">换绑邮箱</button>`
+      : `<button type="button" data-account-change-email="${esc(r.id)}" title="从指定邮箱来源领取新邮箱并换绑">换绑邮箱</button>`,
     `<button type="button" data-account-change-email-log="${esc(r.id)}" title="查看最近一次邮箱换绑日志">换绑日志</button>`,
-    `<button type="button" onclick="checkSelectedLive([Number('${esc(r.id)}')], this); return false;" title="重新登录该账号，成功则刷新最新 AT/accessToken">查活刷新AT</button>`,
+    isSold
+      ? `<button type="button" disabled title="账号已出售，不可操作">查活刷新AT</button>`
+      : `<button type="button" onclick="checkSelectedLive([Number('${esc(r.id)}')], this); return false;" title="重新登录该账号，成功则刷新最新 AT/accessToken">查活刷新AT</button>`,
     `<button type="button" data-account-live-log="${esc(r.email)}" title="查看该账号最近一次查活日志">查活日志</button>`,
     `<button type="button" data-account-totp-log="${esc(r.email)}" title="查看该账号最近一次 2FA 设置日志">2FA日志</button>`,
-    _planAction(r),
-    _extractLinkAction(r),
-    _codexAction(r),
+    isSold ? `<button type="button" disabled title="账号已出售，不可操作">查套餐</button>` : _planAction(r),
+    isSold ? '' : _extractLinkAction(r),
+    isSold ? '' : _paymentAction(r),
+    isSold ? `<button type="button" disabled title="账号已出售，不可操作">补跑</button>` : _codexAction(r),
     `<button type="button" data-codex-log="${esc(r.email)}" title="查看该账号最近一次 Codex 补跑日志">补跑日志</button>`,
     `<button type="button" data-account-archive="${esc(r.id)}" data-archived="${r.archived ? '0' : '1'}" title="${r.archived ? '恢复到默认账号列表' : '归档后默认账号列表不再显示'}">${r.archived ? '恢复' : '归档'}</button>`,
   ].filter(html => String(html || '').trim());
@@ -3699,6 +4189,7 @@ function closeAccountsV2MoreMenus(except = null) {
   document.querySelectorAll('.accounts-table-v2 .acc-v2-more.open').forEach(el => {
     if (except && el === except) return;
     el.classList.remove('open');
+    el.closest('tr')?.classList.remove('has-open-more');
   });
 }
 function positionAccountsV2MoreMenu(wrap) {
@@ -3721,24 +4212,31 @@ function positionAccountsV2MoreMenu(wrap) {
 function renderAccounts() {
   const total = ACCOUNTS_TOTAL;
   const rows = ACCOUNTS;
-  const rowHtmlV2 = (r) => `
-    <tr>
+  const accountSourceLabel = (source) => ({import: '导入'}[String(source || '').toLowerCase()] || source || '-');
+  const rowHtmlV2 = (r) => {
+    const isSold = r.status === 'sold';
+    const createdRaw = String(r.created_at || '').trim();
+    const createdDate = createdRaw ? (createdRaw.split('T')[0].split(' ')[0] || '-') : '-';
+    const createdFull = createdRaw ? createdRaw.replace('T', ' ') : '-';
+    const soldBadge = isSold ? ' <span class="pill status-failed" style="background:#fef0f0;color:#f56c6c;border-color:#fbc4c4;" title="账号已出售，所有业务操作已锁定">已出售</span>' : '';
+    const archiveBadge = r.archived ? ' <span class="pill status-used" title="该账号已归档">归档</span>' : '';
+    return `
+    <tr class="${isSold ? 'is-sold' : ''}">
       <td class="col-check"><input type="checkbox" class="account-row-check" data-account-id="${esc(r.id)}" ${ACCOUNT_SELECTED.has(Number(r.id)) ? 'checked' : ''}></td>
       <td class="col-id">#${esc(r.id)}</td>
       <td class="col-email" title="${esc(r.email || '-')}${r.original_email ? `\n原邮箱: ${esc(r.original_email)}` : ''}\n${esc(r.user_name || '-')}">
-        <div class="acc-v2-email">${esc(r.email)}${r.archived ? ' <span class="pill status-used" title="该账号已归档">归档</span>' : ''}</div>
-        ${r.original_email ? `<div class="acc-v2-email-history">原邮箱: ${esc(r.original_email)}</div>` : ''}
+        <div class="acc-v2-email">${esc(r.email)}${soldBadge}${archiveBadge}</div>
         <div class="acc-v2-email-user">${esc(r.user_name || '-')}</div>
         ${['queued','running'].includes(r.email_change_status) ? '<div class="acc-v2-email-status">换绑中</div>' : (r.email_change_status === 'failed' ? `<div class="acc-v2-email-status" title="${esc(r.email_change_error || '')}">换绑失败: ${esc(r.email_change_error || '-')}</div>` : '')}
       </td>
-      <td class="col-source">${esc(r.email_source || '-')}</td>
+      <td class="col-source">${esc(accountSourceLabel(r.email_source))}</td>
       <td class="col-token">${_tokenCellV2(r)}</td>
-      <td class="col-password">${r.password ? `<span class="mono" title="${esc(r.password)}">${esc(short(r.password, 18))}</span>` : '<span class="acc-v2-muted">-</span>'}</td>
-      <td class="col-plan">${_planCell(r)}<div class="acc-v2-sub">${_extractLinkCell(r)}</div></td>
+      <td class="col-password">${r.password ? cbtn('复制密码', r.password, 'acc-v2-token-copy') : '<span class="acc-v2-muted">-</span>'}</td>
+      <td class="col-plan">${_colPlanCell(r)}</td>
       <td class="col-note" title="${esc(r.note || '')}">${r.note ? esc(short(r.note, 80)) : '<span class="acc-v2-muted">-</span>'}</td>
       <td class="col-small">${_totpCellV2(r)}</td>
       <td class="col-status">${_codexCellV2(r)}</td>
-      <td class="col-time" title="${esc(r.created_at || '-')}">${esc(r.created_at || '-')}</td>
+      <td class="col-time" title="${esc(createdFull)}">${esc(createdDate)}</td>
       <td class="col-actions">
         <div class="acc-v2-actions">
           <button type="button" class="danger" data-account-delete="${esc(r.id)}" data-email="${esc(r.email)}">删除</button>
@@ -3749,6 +4247,7 @@ function renderAccounts() {
         </div>
       </td>
     </tr>`;
+  };
 
   const bodyV2 = $('#accountsBodyV2');
   if (bodyV2) {
@@ -3766,10 +4265,11 @@ function updateAccountSelectionUi(pageRows = null) {
   const archiveLabel = SHOW_ARCHIVED_ACCOUNTS ? '恢复选中' : '归档选中';
   const archiveTitle = SHOW_ARCHIVED_ACCOUNTS ? '把选中的归档账号恢复到默认账号列表' : '归档选中的账号；默认账号列表将不再查询/显示这些账号';
   const v2Ids = [
-    'btnCheckSelectedPlansV2', 'btnExtractSelectedLinksV2',
+    'btnCheckSelectedPlansV2', 'btnExtractSelectedLinksV2', 'btnPaySelectedAccountsV2',
     'btnRetrySelectedCodexV2', 'btnDownloadSelectedCpaV2', 'btnStopSelectedCodexV2',
     'btnSetupSelectedTotpV2', 'btnChangeSelectedEmailsV2', 'btnNoteSelectedAccountsV2', 'btnCopySelectedLinesV2', 'btnCopySelectedTokensV2', 'btnCopySelectedEmailsV2',
     'btnDownloadSelectedTxtV2', 'btnDownloadSelectedFullExportV2', 'btnCopySelectedFullExportV2', 'btnCopySelectedLoginCredentialsV2', 'btnArchiveSelectedAccountsV2', 'btnDeleteSelectedAccountsV2',
+    'btnMarkSelectedSoldV2', 'btnMarkSelectedUnsoldV2',
   ];
   v2Ids.forEach(id => {
     const el = document.getElementById(id);
@@ -3930,6 +4430,7 @@ async function onAccountsBodyClick(e) {
     closeAccountsV2MoreMenus();
     if (willOpen) {
       wrap.classList.add('open');
+      wrap.closest('tr')?.classList.add('has-open-more');
       moreToggle.setAttribute('aria-expanded', 'true');
       positionAccountsV2MoreMenu(wrap);
     }
@@ -4017,6 +4518,42 @@ async function onAccountsBodyClick(e) {
     return;
   }
 
+  const markSoldBtn = e.target.closest('[data-account-mark-sold]');
+  if (markSoldBtn) {
+    const id = Number(markSoldBtn.dataset.accountMarkSold);
+    if (!id) return;
+    try {
+      await api(`/api/accounts/${id}/sold`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({sold: true}),
+      });
+      showToast('账号已标记为已出售');
+      loadAccounts();
+    } catch(err) {
+      showToast('标记已出售失败: ' + err.message);
+    }
+    return;
+  }
+
+  const markUnsoldBtn = e.target.closest('[data-account-mark-unsold]');
+  if (markUnsoldBtn) {
+    const id = Number(markUnsoldBtn.dataset.accountMarkUnsold);
+    if (!id) return;
+    try {
+      await api(`/api/accounts/${id}/sold`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({sold: false}),
+      });
+      showToast('账号已恢复为可用状态');
+      loadAccounts();
+    } catch(err) {
+      showToast('恢复可用失败: ' + err.message);
+    }
+    return;
+  }
+
   const noteBtn = e.target.closest('[data-account-note]');
   if (noteBtn) {
     await editAccountNote(Number(noteBtn.dataset.accountNote), noteBtn);
@@ -4038,6 +4575,12 @@ async function onAccountsBodyClick(e) {
   const extractBtn = e.target.closest('[data-extract-link]');
   if (extractBtn) {
     await extractOneLink(Number(extractBtn.dataset.extractLink), extractBtn);
+    return;
+  }
+
+  const payBtn = e.target.closest('[data-account-payment]');
+  if (payBtn) {
+    await payOneAccount(Number(payBtn.dataset.accountPayment), payBtn);
     return;
   }
 
@@ -4477,7 +5020,7 @@ function bindDateFilterPanel({ btnId, panelId, fromId, toId, onApply }) {
             <button type="button" class="jobs-tb-btn" data-quick-date="yesterday">昨天</button>
             <button type="button" class="jobs-tb-btn" data-quick-date="3d">近3天</button>
             <button type="button" class="jobs-tb-btn" data-quick-date="7d">近7天</button>
-          </div>
+            <button type="button" class="jobs-tb-btn" data-quick-date="clear">清空</button>
           <div class="cal-foot-tip">双击某个日期，只看当天</div>
         </div>
       </div>`;
@@ -4518,10 +5061,14 @@ function bindDateFilterPanel({ btnId, panelId, fromId, toId, onApply }) {
       const en = new Date();
       const st = new Date();
       const k = b.dataset.quickDate;
-      if (k === 'yesterday') { st.setDate(st.getDate() - 1); en.setDate(en.getDate() - 1); }
-      else if (k === '3d') st.setDate(st.getDate() - 2);
-      else if (k === '7d') st.setDate(st.getDate() - 6);
-      start = fmt(st); end = fmt(en);
+      if (k === 'clear') {
+        start = ''; end = '';
+      } else {
+        if (k === 'yesterday') { st.setDate(st.getDate() - 1); en.setDate(en.getDate() - 1); }
+        else if (k === '3d') st.setDate(st.getDate() - 2);
+        else if (k === '7d') st.setDate(st.getDate() - 6);
+        start = fmt(st); end = fmt(en);
+      }
       dirty = false;
       setHidden(); syncBtnText(); close(); if (onApply) onApply();
     }));
@@ -4706,7 +5253,7 @@ async function extractOneLink(id, btn) {
     showToast('提链任务已入队');
     await pollAccountPlanStatuses();
   } catch(err) {
-    showToast('提链失败: ' + err.message);
+    showToast(_formatExtractLinkError(err.message));
     btn.disabled = false;
     btn.textContent = old;
   }
@@ -4716,7 +5263,7 @@ async function extractSelectedLinks() {
   const ids = Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
   const selected = ids.map(id => ACCOUNTS.find(a => Number(a.id) === Number(id))).filter(Boolean);
-  const eligible = selected.filter(a => (a.current_plan_type || a.plan_type || '').toString().toLowerCase() === 'free' && !!a.plus_trial_eligible);
+  const eligible = selected.filter(a => a.status !== 'sold' && (a.current_plan_type || a.plan_type || '').toString().toLowerCase() === 'free' && !!a.plus_trial_eligible);
   if (!eligible.length) { showToast('选中账号里没有 free(可Plus试用)'); return; }
   if (!confirm(`确定批量提链 ${eligible.length} 个 free(可Plus试用) 账号吗？\n\n非可试用账号会自动跳过。成功会按账号消耗 CDK 次数。`)) return;
   const btn = $('#btnExtractSelectedLinksV2');
@@ -4727,16 +5274,89 @@ async function extractSelectedLinks() {
     const r = await api('/api/accounts/extract-link-bulk', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: ids}),
+      body: JSON.stringify({account_ids: eligible.map(a => a.id)}),
     });
     const skipped = (r.skipped_count || 0) + (r.busy_count || 0) + (r.failed_count || 0);
     showToast(skipped ? `已入队 ${r.started_count || 0} 个，跳过/失败 ${skipped} 个` : `已入队 ${r.started_count || 0} 个`);
     await pollAccountPlanStatuses();
   } catch(err) {
-    showToast('批量提链失败: ' + err.message);
+    showToast('批量' + _formatExtractLinkError(err.message));
     updateAccountSelectionUi();
   } finally {
     btn.textContent = old;
+  }
+}
+
+async function payOneAccount(id, btn) {
+  const acc = ACCOUNTS.find(a => Number(a.id) === Number(id));
+  if (!acc) { showToast('账号不存在'); return; }
+  const link = (acc.extract_link_long_url || acc.extract_link_copy_paste || '').trim();
+  if (!link) {
+    showToast('该账号尚未成功提链，缺少支付链接');
+    return;
+  }
+  const expireMs = _parseExtractLinkExpiresMs(acc.extract_link_expires_at || '');
+  if (expireMs > 0 && Date.now() >= expireMs) {
+    showToast('支付链接已过期，请重新提链后再发起支付');
+    return;
+  }
+  if (!acc.has_access_token) {
+    showToast('该账号缺少 access_token');
+    return;
+  }
+  if (!confirm(`确定为该账号发起支付吗？\n\n${acc.email || ('#' + id)}\n\n将向配置的支付渠道提交提链支付物进行支付。`)) return;
+  const old = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '支付中…';
+  try {
+    await api('/api/accounts/payment', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({account_id: id}),
+    });
+    showToast('支付任务已入队');
+    await pollAccountPlanStatuses();
+  } catch(err) {
+    showToast(_formatPaymentError(err.message));
+    btn.disabled = false;
+    btn.textContent = old;
+  }
+}
+
+async function paySelectedAccounts() {
+  const ids = Array.from(ACCOUNT_SELECTED);
+  if (ids.length === 0) { showToast('请先选择账号'); return; }
+  const selected = ids.map(id => ACCOUNTS.find(a => Number(a.id) === Number(id))).filter(Boolean);
+  const eligible = selected.filter(a => {
+    if (a.status === 'sold') return false;
+    const hasLink = !!(a.extract_link_long_url || a.extract_link_copy_paste || '').trim();
+    const hasToken = !!a.has_access_token;
+    const expMs = _parseExtractLinkExpiresMs(a.extract_link_expires_at || '');
+    const isExpired = expMs > 0 && Date.now() >= expMs;
+    return hasLink && hasToken && !isExpired;
+  });
+  if (!eligible.length) { showToast('选中的账号中没有未过期的提链支付链接'); return; }
+  if (!confirm(`确定为选中的 ${eligible.length} 个账号批量发起支付吗？\n\n未提链或无 token 的账号会自动跳过。`)) return;
+  const btn = $('#btnPaySelectedAccountsV2');
+  const old = btn ? btn.textContent : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '提交中…';
+  }
+  try {
+    const r = await api('/api/accounts/payment-bulk', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({account_ids: eligible.map(a => a.id)}),
+    });
+    const skipped = (r.busy_count || 0) + (r.failed_count || 0);
+    showToast(skipped ? `已入队 ${r.started_count || 0} 个，跳过/失败 ${skipped} 个` : `已入队 ${r.started_count || 0} 个`);
+    await pollAccountPlanStatuses();
+  } catch(err) {
+    showToast('批量' + _formatPaymentError(err.message));
+    updateAccountSelectionUi();
+  } finally {
+    if (btn) btn.textContent = old;
   }
 }
 
@@ -4816,7 +5436,7 @@ async function uploadSelectedCodexAgentSub2() {
   const selected = ids.map(id => ACCOUNTS.find(a => Number(a.id) === Number(id))).filter(Boolean);
   const ready = selected.filter(a => (a.codex_agent_status || '') === 'success');
   if (!ready.length) { showToast('选中账号里没有已生成的 Agent Token'); return; }
-  if (!confirm(`确定上传选中的 ${ready.length} 个 Agent Token 到 sub2api 吗？\n\n未生成成功的账号会自动跳过。`)) return;
+  if (!confirm(`确定把选中的 ${ready.length} 个已生成 Agent Token 上传到 sub2api 吗？\n\n未生成成功的账号会自动跳过。`)) return;
   const btn = $('#btnUploadSelectedAgentSub2V2');
   const old = btn.textContent;
   btn.disabled = true;
@@ -4903,8 +5523,11 @@ function downloadSelectedCodexAgents() {
 }
 
 async function checkSelectedPlans() {
-  const ids = Array.from(ACCOUNT_SELECTED);
-  if (ids.length === 0) { showToast('请先选择账号'); return; }
+  const ids = Array.from(ACCOUNT_SELECTED).filter(id => {
+    const acc = ACCOUNTS.find(a => Number(a.id) === Number(id));
+    return !acc || acc.status !== 'sold';
+  });
+  if (ids.length === 0) { showToast('选中的账号均已出售或未选择账号'); return; }
   const workers = getCodexBulkWorkers();
   const btn = $('#btnCheckSelectedPlansV2');
   if (!btn) return;
@@ -4930,8 +5553,12 @@ async function checkSelectedPlans() {
 }
 
 async function checkSelectedLive(idsArg = null, btnArg = null) {
-  const ids = idsArg || Array.from(ACCOUNT_SELECTED);
-  if (ids.length === 0) { showToast('请先选择账号'); return; }
+  const rawIds = idsArg || Array.from(ACCOUNT_SELECTED);
+  const ids = rawIds.filter(id => {
+    const acc = ACCOUNTS.find(a => Number(a.id) === Number(id));
+    return !acc || acc.status !== 'sold';
+  });
+  if (ids.length === 0) { showToast('选中的账号均已出售，不可操作'); return; }
   const workers = getCodexBulkWorkers();
   const msg = idsArg ? `确定查活这个账号并刷新最新 AT/accessToken 吗？` : `确定查活选中的 ${ids.length} 个账号吗？
 
@@ -5033,6 +5660,31 @@ async function archiveSelectedAccounts() {
     updateAccountSelectionUi();
   } finally {
     btn.textContent = old;
+  }
+}
+
+async function markSelectedAccountsSold(sold = true) {
+  const ids = Array.from(ACCOUNT_SELECTED);
+  if (ids.length === 0) { showToast('请先选择账号'); return; }
+  const action = sold ? '标记已出售' : '恢复可用';
+  if (!confirm(`确定把选中的 ${ids.length} 个账号${action}吗？\n\n${sold ? '标记已出售后，账号将处于不可用状态，查活、查套餐、提链、代付、换绑等操作均不可用。' : '恢复后账号将解除锁定，恢复正常操作。'}`)) return;
+  const btn = sold ? $('#btnMarkSelectedSoldV2') : $('#btnMarkSelectedUnsoldV2');
+  const old = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = `${action}中…`; }
+  try {
+    const r = await api('/api/accounts/sold-bulk', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({account_ids: ids, sold}),
+    });
+    showToast(`已成功${action} ${r.updated_count || 0} 个账号`);
+    loadAccounts();
+    loadSummary();
+  } catch(err) {
+    showToast(`批量${action}失败: ` + err.message);
+  } finally {
+    if (btn) { btn.textContent = old; btn.disabled = false; }
+    updateAccountSelectionUi();
   }
 }
 
@@ -5225,6 +5877,7 @@ $('#emailChangeModalV2').addEventListener('click', e => { if (e.target.id === 'e
   };
   bind('btnCheckSelectedPlansV2', checkSelectedPlans);
   bind('btnExtractSelectedLinksV2', extractSelectedLinks);
+  bind('btnPaySelectedAccountsV2', paySelectedAccounts);
   bind('btnRetrySelectedCodexV2', retrySelectedCodex);
   bind('btnDownloadSelectedCpaV2', downloadSelectedCpa);
   bind('btnStopSelectedCodexV2', stopSelectedCodex);
@@ -5242,6 +5895,8 @@ $('#emailChangeModalV2').addEventListener('click', e => { if (e.target.id === 'e
   bind('btnCopySelectedLoginCredentialsV2', copySelectedAccountLoginCredentials);
   bind('btnArchiveSelectedAccountsV2', archiveSelectedAccounts);
   bind('btnDeleteSelectedAccountsV2', deleteSelectedAccounts);
+  bind('btnMarkSelectedSoldV2', () => markSelectedAccountsSold(true));
+  bind('btnMarkSelectedUnsoldV2', () => markSelectedAccountsSold(false));
 })();
 
 // ---------- 邮箱池 ----------
@@ -5503,6 +6158,55 @@ async function onOutlookBodyClick(e) {
   window.addEventListener('resize', () => closeOutlookV2MoreMenus());
   bindOutlookImportModal();
 })();
+
+function openAccountImportModal() {
+  const modal = $('#accountImportModalV2');
+  if (!modal) return;
+  $('#accountImportResultV2').textContent = '';
+  modal.classList.remove('hidden');
+  updateModalScrollLock();
+  setTimeout(() => $('#accountImportTextV2')?.focus(), 50);
+}
+function closeAccountImportModal() {
+  const modal = $('#accountImportModalV2');
+  if (modal) modal.classList.add('hidden');
+  const textEl = $('#accountImportTextV2');
+  if (textEl) textEl.value = '';
+  updateModalScrollLock();
+}
+async function submitAccountImport() {
+  const textEl = $('#accountImportTextV2');
+  const submitBtn = $('#btnSubmitAccountImportV2');
+  const text = textEl?.value || '';
+  if (!text.trim()) { showToast('请先填写账号凭据'); return; }
+  if (submitBtn) submitBtn.disabled = true;
+  try {
+    const workers = Math.max(1, Math.min(16, Number($('#regWorkersV2')?.value || 3)));
+    const data = await api('/api/jobs/import', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({text, workers}),
+    });
+    closeAccountImportModal();
+    PAGERS.jobs.page = 1;
+    await refreshJobs();
+    showToast(`已提交 ${data.submitted || 0} 个导入登录任务`);
+  } catch (e) {
+    showToast('提交导入失败: ' + e.message);
+  } finally {
+    if (submitBtn) submitBtn.disabled = false;
+  }
+}
+function bindAccountImportModal() {
+  const modal = $('#accountImportModalV2');
+  if (!modal || modal.dataset.bound) return;
+  modal.dataset.bound = '1';
+  $('#btnImportAccountsV2')?.addEventListener('click', openAccountImportModal);
+  $('#btnCloseAccountImportV2')?.addEventListener('click', closeAccountImportModal);
+  $('#btnCancelAccountImportV2')?.addEventListener('click', closeAccountImportModal);
+  $('#btnSubmitAccountImportV2')?.addEventListener('click', submitAccountImport);
+  modal.addEventListener('click', e => { if (e.target === modal) closeAccountImportModal(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !modal.classList.contains('hidden')) closeAccountImportModal(); });
+}
+bindAccountImportModal();
 
 const IMPORT_SOURCE_LABELS = {
   outlook: 'Outlook 邮箱池',
@@ -6082,7 +6786,7 @@ function configGroups() {
 }
 
 function emailConfigSectionForKey(key) {
-  if (['USE_EMAIL_SERVICE','REGISTER_EMAIL','REGISTER_NAME','OTP_MAX_WAIT','OTP_POLL_INTERVAL','EMAIL_SOURCE'].includes(key)) {
+  if (['USE_EMAIL_SERVICE','ENABLE_ICLOUD_EMAIL_ALIAS','REGISTER_EMAIL','REGISTER_NAME','OTP_MAX_WAIT','OTP_POLL_INTERVAL','EMAIL_SOURCE'].includes(key)) {
     return ['通用邮箱 / OTP', '邮箱来源选择、OTP 等待参数、手动邮箱等通用设置'];
   }
   if (key.startsWith('GPTMAIL_')) return ['GPTMail', 'GPTMail 临时邮箱 API 配置'];
@@ -6107,6 +6811,16 @@ function smsConfigSectionForKey(key) {
   if (key.startsWith('H_')) return ['H 接码', 'H_API.md 本地 H 取号服务配置；项目ID/国家留空时复用通用字段'];
   if (key.startsWith('L_')) return ['L 接码', 'L_API.md 本地 L 取号服务配置'];
   return ['其他接码配置', ''];
+}
+let CONFIG_PAYMENT_ACTIVE_SECTION_V2 = '通用支付 / 渠道选择';
+function paymentConfigSectionForKey(key) {
+  if (['ENABLE_AUTO_PAY_AFTER_EXTRACT', 'PAYMENT_CHANNEL', 'PAYMENT_WORKERS', 'PAYMENT_QUEUE_LIMIT', 'PAYMENT_POLL_INTERVAL', 'PAYMENT_MAX_WAIT_SECONDS'].includes(key)) {
+    return ['通用支付 / 渠道选择', '代付开关、当前激活代付渠道与后台并发参数'];
+  }
+  if (key.startsWith('FOARGE_')) {
+    return ['Foarge 众包代付', 'Foarge (Crowd Publisher) API 网关、PBK 卡密、代付通道 (UPI/PIX) 与专属工人圈调度配置'];
+  }
+  return ['其他支付配置', ''];
 }
 
 function codexConfigSectionForKey(key) {
@@ -6207,6 +6921,7 @@ function configSectionIntro(name) {
   if (name === '浏览器画像') return '浏览器语言、时区、出口 IP 画像与注册省流量设置。';
   if (name === '代理池') return '代理列表与套餐/Agent 网络模式。';
   if (name === '提链') return '提链服务地址、CDK 与并发参数。';
+  if (name === '支付配置') return 'Plus 代付渠道选择、卡密/API Key、支付通道与工人调度配置。';
   return '';
 }
 function configFeatureIcon(key) {
@@ -6775,6 +7490,16 @@ function renderConfigSectionV2(name, fields) {
       'sms-section-v2'
     );
   }
+  if (name === '支付配置') {
+    return renderSectionedConfigSectionV2(
+      name,
+      fields,
+      paymentConfigSectionForKey,
+      ['通用支付 / 渠道选择', 'Foarge 众包代付', '其他支付配置'],
+      { get: () => CONFIG_PAYMENT_ACTIVE_SECTION_V2, set: v => { CONFIG_PAYMENT_ACTIVE_SECTION_V2 = v; } },
+      'payment-section-v2'
+    );
+  }
   return renderMixedConfigSectionV2(name, fields, configSectionIntro(name));
 }
 function renderConfigLayoutV2() {
@@ -6844,6 +7569,13 @@ function bindConfigLayoutV2() {
       if (smsTab) {
         e.preventDefault();
         CONFIG_SMS_ACTIVE_SECTION_V2 = smsTab.dataset.smsSectionV2;
+        renderConfigLayoutV2();
+        return;
+      }
+      const payTab = e.target.closest('[data-payment-section-v2]');
+      if (payTab) {
+        e.preventDefault();
+        CONFIG_PAYMENT_ACTIVE_SECTION_V2 = payTab.dataset.paymentSectionV2;
         renderConfigLayoutV2();
         return;
       }

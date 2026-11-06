@@ -509,10 +509,16 @@ def _run(account_id: int, source: str) -> dict:
 def enqueue(account_id: int, source: str, trigger: str = "manual") -> dict:
     account_id = int(account_id)
     source = str(source or "").strip().lower()
+    acc = db.get_account(account_id)
+    if acc and acc.get("status") == "sold":
+        return {"accepted": False, "error": "账号已出售，不可操作"}
     if not _SLOTS.acquire(blocking=False):
         return {"accepted": False, "error": "邮箱换绑队列已满"}
     if not db.claim_account_email_change(account_id, source, trigger):
         _SLOTS.release()
+        acc = db.get_account(account_id)
+        if acc and acc.get("status") == "sold":
+            return {"accepted": False, "error": "账号已出售，不可操作"}
         return {"accepted": False, "busy": True, "error": "账号正在换绑或不存在"}
     _append_log(account_id, f"换绑任务已入队：source={source} trigger={trigger}", clear=True)
     try:

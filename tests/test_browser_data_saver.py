@@ -220,6 +220,30 @@ class BrowserDataSaverTests(unittest.TestCase):
 
         self.assertEqual(saver.snapshot()["data_saver_blocked_count"], 0)
 
+    def test_post_auth_deep_mode_blocks_backend_api_and_assets(self):
+        with patch("core.browser_data_saver._cfg.BROWSER_DATA_SAVER_MODE", True):
+            saver = BrowserDataSaver(label="test")
+            driver = _Driver()
+            saver.install_selenium(driver)
+            self.assertTrue(saver.enable_post_auth_deep_mode(driver))
+
+        urls = driver.commands[-1][1]["urls"]
+        self.assertIn("*://chatgpt.com/_next/*", urls)
+        self.assertIn("*://chatgpt.com/cdn/assets/*", urls)
+        self.assertIn("*://chatgpt.com/ces/*", urls)
+        self.assertIn("*://chatgpt.com/backend-api/*", urls)
+
+    def test_font_blocking_included_in_selenium_rules(self):
+        with patch("core.browser_data_saver._cfg.BROWSER_DATA_SAVER_MODE", True), patch(
+            "core.browser_data_saver._cfg.BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES", ["font"]
+        ):
+            saver = BrowserDataSaver(label="test")
+            driver = _Driver()
+            saver.install_selenium(driver)
+
+        urls = driver.commands[-1][1]["urls"]
+        self.assertIn("*.woff*", urls)
+        self.assertIn("*.woff2*", urls)
 
 if __name__ == "__main__":
     unittest.main()

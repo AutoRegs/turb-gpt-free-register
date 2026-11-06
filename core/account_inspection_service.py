@@ -93,6 +93,9 @@ def _run(run: dict) -> None:
         if account is None:
             record(skipped_count=1)
             return
+        if str(account.get("status") or "").strip().lower() == "sold":
+            record(skipped_count=1)
+            return
         if str(account.get("live_check_status") or "").strip().lower() == "deactivated":
             record(skipped_count=1, deactivated_skipped_count=1, failure=dict(
                 account_id=account_id, email=account.get("email", ""), status="deactivated_skipped",

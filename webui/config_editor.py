@@ -51,6 +51,10 @@ EDITABLE_FIELDS = [
         "label": "启用 Codex OAuth", "help": "注册成功后自动跑 Codex 授权（全新session+接码），落盘 codex-邮箱.json",
     },
     {
+        "key": "LIVE_CHECK_PROTOCOL_FAILURE_LIMIT", "file": "roxybrowser.py", "type": "int", "group": "功能开关",
+        "label": "协议查活失败重试次数", "help": "查活时纯协议连续失败达到该次数后，自动切换为当前配置的注册驱动方式（如 Roxy/Cloak 等指纹浏览器）进行查活，默认 4 次。",
+    },
+    {
         "key": "REGISTRATION_DRIVER", "file": "roxybrowser.py", "type": "str", "group": "注册方式",
         "label": "注册驱动", "help": "默认推荐 roxy；protocol=纯协议，容易封号不建议；roxy=RoxyBrowser；cloak=CloakBrowser；browser_use=Browser Use Cloud+Playwright；skyvern=Skyvern Browser Sessions+Playwright",
     },
@@ -265,7 +269,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "ROXY_DELETE_PROFILE_AFTER_RUN", "file": "roxybrowser.py", "type": "bool", "group": "RoxyBrowser",
-        "label": "结束后删除环境", "help": "一号一环境模式下，任务结束后删除本轮创建的 Roxy Profile",
+        "label": "结束后删除环境", "help": "开启时注册与导入成功/失败环境均删除；关闭时注册与导入成功账号保留环境并关闭，失败账号仍自动删除以防堆积",
     },
     {
         "key": "ROXY_RANDOM_OS_ON_CREATE", "file": "roxybrowser.py", "type": "bool", "group": "RoxyBrowser",
@@ -274,6 +278,14 @@ EDITABLE_FIELDS = [
     {
         "key": "ROXY_RANDOM_OS_CHOICES", "file": "roxybrowser.py", "type": "str", "group": "RoxyBrowser",
         "label": "随机OS范围", "help": "逗号分隔，默认 Windows,macOS；Roxy 支持 Windows / macOS / Linux / IOS / Android",
+    },
+    {
+        "key": "ROXY_RANDOM_CORE_VERSION", "file": "roxybrowser.py", "type": "bool", "group": "RoxyBrowser",
+        "label": "创建环境随机内核版本", "help": "开启后从内核版本池中随机选取一个 Chromium 内核版本及对应 ChromeDriver，降低指纹同质化",
+    },
+    {
+        "key": "ROXY_CORE_VERSION_POOL", "file": "roxybrowser.py", "type": "str", "group": "RoxyBrowser",
+        "label": "内核版本池", "help": "允许参与随机抽取的内核版本列表，逗号分隔，默认 143,149,150,151,152,153,154（已自动排除包含官方强制校验暗桩的 155+ 版本）",
     },
     {
         "key": "ROXY_RANDOM_PROFILE_NAME_ON_CREATE", "file": "roxybrowser.py", "type": "bool", "group": "RoxyBrowser",
@@ -343,6 +355,10 @@ EDITABLE_FIELDS = [
     {
         "key": "USE_EMAIL_SERVICE", "file": "email.py", "type": "bool", "group": "邮箱 / OTP",
         "label": "自动取邮箱+收码", "help": "True=从邮箱池自动领邮箱并自动收 OTP；False=手动模式：用 REGISTER_EMAIL，OTP 在任务页手填",
+    },
+    {
+        "key": "ENABLE_ICLOUD_EMAIL_ALIAS", "file": "email.py", "type": "bool", "group": "邮箱 / OTP",
+        "label": "随机生成icloud邮箱别名", "help": "开启后，如果邮箱为 icloud.com 且无别名，第一次注册使用原邮箱，第二次随机生成 6 位别名（小写字母+数字，如 xxx+abc123@icloud.com）再注册一次",
     },
     {
         "key": "REGISTER_EMAIL", "file": "register.py", "type": "str", "group": "邮箱 / OTP",
@@ -583,7 +599,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "BROWSER_DATA_SAVER_BLOCKED_PROXY_HOSTS", "file": "browser.py", "type": "list_str_multiline", "group": "浏览器画像",
-        "label": "省流量代理域名屏蔽", "help": "仅开启省流量模式且使用本地浏览器代理中继时生效；连接上游前阻断启动/后台下载。每行一个域名（包含子域名），默认 dl.google.com、gvt1.com；填 [] 关闭，不填 URL 或路径",
+        "label": "省流量代理域名屏蔽", "help": "仅开启省流量模式且使用本地浏览器代理中继时生效；连接上游前阻断启动/后台下载。每行一个域名（包含子域名），默认 dl.google.com、gvt1.com、google.com、googleapis.com、statsigapi.net；填 [] 关闭，不填 URL 或路径",
     },
     {
         "key": "BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES", "file": "browser.py", "type": "list_str_multiline", "group": "浏览器画像",
@@ -703,6 +719,55 @@ EDITABLE_FIELDS = [
     {
         "key": "EXTRACT_LINK_WORKERS", "file": "extract_link.py", "type": "int", "group": "提链",
         "label": "提链并发数", "help": "批量提链后台线程数，建议 1-4",
+    },
+    # ---- 支付配置 ----
+    {
+        "key": "ENABLE_AUTO_PAY_AFTER_EXTRACT", "file": "payment.py", "type": "bool", "group": "支付配置",
+        "label": "提链成功后自动代付", "help": "开启后，账号提取到 Stripe 付款链接后立即自动推送到当前选中的支付渠道进行代付",
+    },
+    {
+        "key": "PAYMENT_CHANNEL", "file": "payment.py", "type": "str", "group": "支付配置",
+        "label": "当前激活支付渠道", "help": "当前使用的支付渠道代码，默认 foarge；切换后下方展示对应渠道的独立配置",
+    },
+    {
+        "key": "PAYMENT_WORKERS", "file": "payment.py", "type": "int", "group": "支付配置",
+        "label": "代付并发线程数", "help": "同时处理代付任务的后台并发数，建议 1-5",
+    },
+    {
+        "key": "FOARGE_AUTH_MODE", "file": "payment.py", "type": "str", "group": "支付配置",
+        "label": "Foarge 认证模式", "help": "pbk (预付卡密按次扣减，推荐) 或 api_key (钱包余额扣款)",
+    },
+    {
+        "key": "FOARGE_PBK_KEY", "file": "payment.py", "type": "str", "group": "支付配置",
+        "label": "Foarge PBK 卡密", "help": "Foarge 预付密钥 (PBK-XXXX-XXXX-XXXX)，按次核销；保存在 .env", "storage": "env", "secret": True,
+    },
+    {
+        "key": "FOARGE_API_KEY", "file": "payment.py", "type": "str", "group": "支付配置",
+        "label": "Foarge 钱包 API Key", "help": "钱包模式 API 密钥 (pk_live_...)；保存在 .env", "storage": "env", "secret": True,
+    },
+    {
+        "key": "FOARGE_PAYMENT_METHOD", "file": "payment.py", "type": "str", "group": "支付配置",
+        "label": "Foarge 优先代付通道", "help": "upi (印度，推荐) / pix (巴西) / blik (波兰)；提链结果未指定通道时使用本默认值",
+    },
+    {
+        "key": "FOARGE_MARKUP_CNY", "file": "payment.py", "type": "float", "group": "支付配置",
+        "label": "Foarge 自愿加价赏金(元)", "help": "在官方底价基础上额外增加的加价金额，提高公海大厅工人抢单优先级",
+    },
+    {
+        "key": "FOARGE_PREFERRED_WORKER_IDS", "file": "payment.py", "type": "str", "group": "支付配置",
+        "label": "Foarge 专属工人圈", "help": "指定优先抢单的工人 ID（逗号分隔，如 w_4fe73ac5ad0a），留空为公海大厅抢单",
+    },
+    {
+        "key": "FOARGE_FALLBACK_SEC", "file": "payment.py", "type": "int", "group": "支付配置",
+        "label": "专属圈抢单窗口(秒)", "help": "专属工人圈优先抢单时长，默认 45 秒，超时后自动回落公海大厅；0 为严格独占不回落",
+    },
+    {
+        "key": "FOARGE_API_BASE", "file": "payment.py", "type": "str", "group": "支付配置",
+        "label": "Foarge API 网关基址", "help": "默认 https://foarge.com/api/publisher/v1",
+    },
+    {
+        "key": "FOARGE_TIMEOUT", "file": "payment.py", "type": "int", "group": "支付配置",
+        "label": "Foarge 请求超时(秒)", "help": "请求 Foarge API 接口的超时时间，默认 30 秒",
     },
     # ---- Codex 配置 ----
     {
