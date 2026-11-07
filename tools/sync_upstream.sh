@@ -9,7 +9,7 @@ cd "$ROOT_DIR"
 
 if ! git remote | grep -q "^upstream$"; then
     echo "未检测到 upstream 源，正在添加官方仓库..."
-    git remote add upstream https://github.com/AutoRegs/turb-gpt-free-register.git
+    git remote add upstream https://github.com/myfanhua/turb-gpt-free-register.git
 fi
 
 echo "============================================================"
